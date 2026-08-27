@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FinanceBuddy",
+  "version": "0.1.0",
+  "identifier": "app.financebuddy.desktop",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --prefix ../../web",
+    "beforeBuildCommand": "npm run build --prefix ../../web"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "FinanceBuddy",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 380,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "category": "Finance"
+  }
+}
