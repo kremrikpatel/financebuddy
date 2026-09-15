@@ -105,10 +105,10 @@ async def test_interaction_csv_import_to_budget_overspend_alert(
 
     # 2. Ingest CSV with Dining transactions totaling 15000 minor ($150)
     csv_data = (
-        b"Date,Amount,Merchant,Description\n"
+        "Date,Amount,Merchant,Description\n"
         f"{today.isoformat()},-80.00,McDonalds,Lunch\n"
         f"{today.isoformat()},-70.00,Chipotle,Dinner\n"
-    ).decode("utf-8").encode("utf-8")
+    ).encode("utf-8")
 
     files = {"file": ("dining.csv", csv_data, "text/csv")}
     import_resp = await async_client.post(

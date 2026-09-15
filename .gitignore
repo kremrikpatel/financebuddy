@@ -35,9 +35,5 @@ Thumbs.db
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 
-.agents/
-
-ORIGINAL_REQUEST.md
-PROJECT.md
-TEST_INFRA.md
-TEST_READY.md
+.remember
+.agents

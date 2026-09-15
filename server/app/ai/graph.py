@@ -30,13 +30,16 @@ from app.ai.tools import (
     AGENT_TOOLS,
     budget_status,
     debt_overview,
+    deduction_overview,
     forecast_cashflow,
     goal_overview,
+    gst_report,
     list_accounts,
     recent_alerts,
     search_transactions,
     spending_summary,
     subscriptions_detected,
+    tax_summary,
 )
 from app.core.logging import get_logger
 
@@ -58,9 +61,13 @@ COACH_PROMPT = SYSTEM_BASE + (
 BUDGET_PROMPT = SYSTEM_BASE + "You are the Budget Analyst: analyze envelopes, find overspending, propose allocations."
 FRAUD_PROMPT = SYSTEM_BASE + "You are the Fraud Sentinel: explain alerts, duplicate charges, unusual patterns calmly and precisely."
 GOALS_PROMPT = SYSTEM_BASE + "You are the Goals Advisor: design savings plans, auto-adjust contributions, track progress."
+TAX_PROMPT = SYSTEM_BASE + (
+    "You are the Tax Specialist: calculate Australian estimated taxes, analyze deductions, "
+    "prepare quarterly BAS (GST 1A vs 1B), and identify deductible business expenses."
+)
 ASSISTANT_PROMPT = SYSTEM_BASE + "You are a knowledgeable financial-literacy assistant. Ground answers in the provided reference material."
 
-ROUTES = ("coach", "budget", "fraud", "goals", "assistant")
+ROUTES = ("coach", "budget", "fraud", "goals", "tax", "assistant")
 
 
 class AgentState(TypedDict):
@@ -68,6 +75,7 @@ class AgentState(TypedDict):
     user_id: str
     thread_id: str
     agent_mode: str
+    page_context: str | None
     route: str
     rag_context: str
 
@@ -100,26 +108,51 @@ async def rag_node(state: AgentState) -> dict:
 
 
 async def supervisor_node(state: AgentState) -> dict:
-    """Route by requested mode, else LLM classification with keyword fallback."""
+    """Route by requested mode, page_context, or LLM classification with keyword fallback."""
     explicit = state.get("agent_mode") or "auto"
     if explicit in ROUTES:
         return {"route": explicit}
+
+    page_context = (state.get("page_context") or "").lower()
     question = next((m.content for m in reversed(state["messages"]) if isinstance(m.content, str)), "")
+    qlow = question.lower()
+
+    tax_keywords = [
+        "tax", "taxes", "taxation", "bas", "gst", "deduction", "deductible",
+        "ato", "abn", "medicare", "income tax", "bracket", "tax return",
+        "tax liability", "tax refund",
+    ]
+
+    # Prioritize tax agent when page_context contains /tax or query relates to tax/BAS/GST/deductions
+    if "/tax" in page_context or any(w in qlow for w in tax_keywords):
+        return {"route": "tax"}
+
+    # Prioritize budget agent when page_context contains /budgets
+    if "/budgets" in page_context or "/budget" in page_context:
+        return {"route": "budget"}
+
+    # Prioritize coach agent on family or dashboard context
+    if "/family" in page_context or "/dashboard" in page_context:
+        return {"route": "coach"}
+
     keywords = {
         "fraud": ["fraud", "suspicious", "duplicate", "unusual", "stolen", "scam", "chargeback"],
         "budget": ["budget", "envelope", "overspend", "allocation", "afford"],
         "goals": ["goal", "save", "saving", "target", "vacation fund"],
         "coach": ["cash flow", "forecast", "runway", "debt", "payoff", "coach", "advice", "plan"],
     }
-    qlow = question.lower()
     for route, words in keywords.items():
         if any(w in qlow for w in words):
             return {"route": route}
+
     try:
         data = await complete_json(
-            f'Route this finance question to one of {list(ROUTES)}.\nQuestion: "{question[:500]}"\n'
+            f'Route this finance question to one of {list(ROUTES)}.\n'
+            f'Page context: "{page_context}"\n'
+            f'Question: "{question[:500]}"\n'
             'Reply JSON: {"route": "<name>"}',
-            system="You are an intent router.")
+            system="You are an intent router.",
+        )
         route = (data or {}).get("route")
         if route in ROUTES:
             return {"route": route}
@@ -152,8 +185,10 @@ def _make_specialist(name: str, prompt: str, tools: list, model=None):
             pass
         content = final.content if isinstance(final.content, str) else "".join(map(str, final.content))
         ai_msg = AIMessage(content=content)
+        resp_meta = {"route": name}
         if provider:
-            ai_msg.response_metadata = {"provider": provider}
+            resp_meta["provider"] = provider
+        ai_msg.response_metadata = resp_meta
         return {"messages": [ai_msg]}
     _node.__name__ = f"{name}_node"
     return _node
@@ -185,6 +220,9 @@ def build_graph(db_session=None):
     g.add_node("goals", _make_specialist("goals", GOALS_PROMPT,
                                          [goal_overview, list_accounts, forecast_cashflow] +
                                          [t for t in AGENT_TOOLS if t.name.startswith("create_goal")]))
+    g.add_node("tax", _make_specialist("tax", TAX_PROMPT,
+                                       [tax_summary, deduction_overview, gst_report,
+                                        search_transactions, spending_summary]))
     g.add_node("assistant", _make_specialist("assistant", ASSISTANT_PROMPT,
                                              [list_accounts, spending_summary, search_transactions]))
 
@@ -208,11 +246,12 @@ _compiled = None
 
 
 async def run_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
-                   agent_mode: str = "auto", db_session=None) -> AIMessage:
+                   agent_mode: str = "auto", page_context: str | None = None,
+                   db_session=None) -> AIMessage:
     graph = build_graph()
     state = {
         "messages": messages, "user_id": user_id, "thread_id": thread_id,
-        "agent_mode": agent_mode, "rag_context": "",
+        "agent_mode": agent_mode, "page_context": page_context, "rag_context": "",
     }
     if db_session is not None:
         state["_db"] = db_session  # consumed by rag_node
@@ -225,15 +264,33 @@ async def run_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
     return result["messages"][-1]
 
 
-def route_of(mode: str, question: str) -> str:
+def route_of(mode: str, question: str, page_context: str | None = None) -> str:
     """Expose routing decision for tests/evals without running the graph."""
     if mode in ROUTES:
         return mode
+
+    page_ctx = (page_context or "").lower()
     qlow = question.lower()
-    for route, words in {"fraud": ["fraud", "suspicious", "duplicate", "unusual", "stolen", "scam", "chargeback"],
-                         "budget": ["budget", "envelope", "overspend", "allocation", "afford"],
-                         "goals": ["goal", "save", "saving", "target", "vacation fund"],
-                         "coach": ["cash flow", "forecast", "runway", "debt", "payoff", "coach", "advice", "plan"]}.items():
+
+    tax_words = [
+        "tax", "taxes", "taxation", "bas", "gst", "deduction", "deductible",
+        "ato", "abn", "medicare", "income tax", "bracket", "tax return",
+        "tax liability", "tax refund",
+    ]
+    if "/tax" in page_ctx or any(w in qlow for w in tax_words):
+        return "tax"
+    if "/budgets" in page_ctx or "/budget" in page_ctx:
+        return "budget"
+    if "/family" in page_ctx or "/dashboard" in page_ctx:
+        return "coach"
+
+    keywords = {
+        "fraud": ["fraud", "suspicious", "duplicate", "unusual", "stolen", "scam", "chargeback"],
+        "budget": ["budget", "envelope", "overspend", "allocation", "afford"],
+        "goals": ["goal", "save", "saving", "target", "vacation fund"],
+        "coach": ["cash flow", "forecast", "runway", "debt", "payoff", "coach", "advice", "plan"],
+    }
+    for route, words in keywords.items():
         if any(w in qlow for w in words):
             return route
     return "assistant"

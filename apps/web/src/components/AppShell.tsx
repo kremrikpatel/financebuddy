@@ -1,26 +1,29 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, ArrowLeftRight, Wallet, Target, Landmark,
-  MessageCircle, Link2, Settings as SettingsIcon, LogOut, Sun, Moon, Bell,
+  LayoutDashboard,
+  ArrowLeftRight,
+  Wallet,
+  Target,
+  Landmark,
+  MessageCircle,
+  Link2,
+  Users,
+  Receipt,
+  Cpu,
+  Settings as SettingsIcon,
+  LogOut,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/stores/auth";
 import { useTheme } from "@/lib/hooks";
 import { LANGUAGES } from "@/i18n";
 import { cn } from "@/lib/utils";
 import NotificationBell from "@/components/NotificationBell";
-
-const items = [
-  { to: "/", icon: LayoutDashboard, key: "nav.dashboard" },
-  { to: "/transactions", icon: ArrowLeftRight, key: "nav.transactions" },
-  { to: "/budgets", icon: Wallet, key: "nav.budgets" },
-  { to: "/goals", icon: Target, key: "nav.goals" },
-  { to: "/debts", icon: Landmark, key: "nav.debts" },
-  { to: "/coach", icon: MessageCircle, key: "nav.chat" },
-  { to: "/connections", icon: Link2, key: "nav.connections" },
-];
+import AiCoachFab from "@/components/AiCoachFab";
 
 export default function AppShell() {
   const { t } = useTranslation();
@@ -28,6 +31,42 @@ export default function AppShell() {
   const logout = useAuth((s) => s.logout);
   const email = useAuth((s) => s.user?.email ?? "");
   const [open, setOpen] = useState(false);
+  const [aiEvalEnabled, setAiEvalEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("fb.ai_eval_enabled") === "true";
+  });
+
+  useEffect(() => {
+    const handleStorage = () => {
+      setAiEvalEnabled(localStorage.getItem("fb.ai_eval_enabled") === "true");
+    };
+    const handleCustomToggle = (e: any) => {
+      if (e?.detail?.enabled !== undefined) {
+        setAiEvalEnabled(e.detail.enabled);
+      } else {
+        handleStorage();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("fb_ai_eval_toggle", handleCustomToggle as EventListener);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("fb_ai_eval_toggle", handleCustomToggle as EventListener);
+    };
+  }, []);
+
+  const navItems = [
+    { to: "/", icon: LayoutDashboard, key: "nav.dashboard" },
+    { to: "/transactions", icon: ArrowLeftRight, key: "nav.transactions" },
+    { to: "/budgets", icon: Wallet, key: "nav.budgets" },
+    { to: "/goals", icon: Target, key: "nav.goals" },
+    { to: "/debts", icon: Landmark, key: "nav.debts" },
+    { to: "/coach", icon: MessageCircle, key: "nav.chat" },
+    { to: "/family", icon: Users, key: "nav.family" },
+    { to: "/tax", icon: Receipt, key: "nav.tax" },
+    { to: "/connections", icon: Link2, key: "nav.connections" },
+    ...(aiEvalEnabled ? [{ to: "/ai-eval", icon: Cpu, key: "nav.aiEval" }] : []),
+  ];
 
   return (
     <div className="flex min-h-screen">
@@ -44,8 +83,8 @@ export default function AppShell() {
           </div>
           <span className="text-lg font-bold tracking-tight">FinanceBuddy</span>
         </div>
-        <nav className="flex-1 space-y-1 p-3">
-          {items.map(({ to, icon: Icon, key }) => (
+        <nav className="flex-1 space-y-1 p-3 overflow-y-auto">
+          {navItems.map(({ to, icon: Icon, key }) => (
             <NavLink
               key={to}
               to={to}
@@ -55,7 +94,7 @@ export default function AppShell() {
                 cn(
                   "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition",
                   isActive
-                    ? "bg-brand/10 text-brand"
+                    ? "bg-brand/10 text-brand font-semibold"
                     : "text-muted hover:bg-surface hover:text-ink",
                 )
               }
@@ -66,14 +105,26 @@ export default function AppShell() {
           ))}
         </nav>
         <div className="space-y-1 border-t border-line p-3">
-          <NavLink to="/settings" className={({ isActive }) =>
-            cn("flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition",
-              isActive ? "bg-brand/10 text-brand" : "text-muted hover:bg-surface hover:text-ink")}>
+          <NavLink
+            to="/settings"
+            onClick={() => setOpen(false)}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition",
+                isActive
+                  ? "bg-brand/10 text-brand font-semibold"
+                  : "text-muted hover:bg-surface hover:text-ink",
+              )
+            }
+          >
             <SettingsIcon size={18} />
             {t("nav.settings")}
           </NavLink>
           <button
-            onClick={() => { logout(); navigate("/login"); }}
+            onClick={() => {
+              logout();
+              navigate("/login");
+            }}
             className="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-muted transition hover:bg-neg/10 hover:text-neg"
           >
             <LogOut size={18} />
@@ -84,18 +135,24 @@ export default function AppShell() {
       </aside>
 
       {open && (
-        <div className="fixed inset-0 z-30 bg-black/30 lg:hidden" onClick={() => setOpen(false)} />
+        <div
+          className="fixed inset-0 z-30 bg-black/30 lg:hidden"
+          onClick={() => setOpen(false)}
+        />
       )}
 
-      {/* Main */}
+      {/* Main Container */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 border-b border-line bg-surface/80 px-4 backdrop-blur lg:px-8">
-          <button className="btn-ghost lg:hidden" onClick={() => setOpen(true)}>☰</button>
+          <button className="btn-ghost lg:hidden" onClick={() => setOpen(true)}>
+            ☰
+          </button>
           <div className="flex-1" />
           <LangSwitcher />
           <ThemeToggle />
           <NotificationBell />
         </header>
+
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 lg:p-8">
           <AnimatePresence mode="wait">
             <motion.div
@@ -109,6 +166,9 @@ export default function AppShell() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Global AI Coach Floating Action Button */}
+      <AiCoachFab />
     </div>
   );
 }

@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from app.ai.pii import mask_pii
@@ -145,7 +145,7 @@ class OfflineMockChatModel(BaseChatModel):
         if "reply json" in low or "respond with valid json" in low or "classify this bank transaction" in low or "extract an expense" in low:
             if "route this finance question" in low:
                 route = "assistant"
-                for r in ("fraud", "budget", "goals", "coach"):
+                for r in ("fraud", "budget", "goals", "tax", "coach"):
                     if r in low:
                         route = r
                         break
@@ -169,7 +169,12 @@ class OfflineMockChatModel(BaseChatModel):
             else:
                 reply_text = json.dumps({"status": "ok", "message": "Deterministic offline mock"})
         else:
-            if "coach" in low or "cash flow" in low:
+            if "tax" in low or "gst" in low or "bas" in low or "deduction" in low:
+                reply_text = (
+                    "Tax Specialist: Based on your Australian tax profile and claimed deductions, "
+                    "your estimated income tax, Medicare levy, and quarterly BAS (GST 1A vs 1B) have been computed."
+                )
+            elif "coach" in low or "cash flow" in low:
                 reply_text = (
                     "Cash-Flow Coach: Based on your recent net flows and account history, "
                     "your cash flow is tracked and stable. Consider setting aside 20% into savings."

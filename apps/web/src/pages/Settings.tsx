@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ShieldCheck, KeyRound, Fingerprint, Lock } from "lucide-react";
+import { ShieldCheck, KeyRound, Fingerprint, Lock, Cpu, Sparkles } from "lucide-react";
 import { http } from "@/lib/api";
 import { Badge, Button, Card, Input, SectionTitle, Spinner } from "@/components/ui";
 import { unlockVault, lockVault, isVaultUnlocked } from "@/lib/vault";
@@ -34,6 +34,9 @@ export default function SettingsPage() {
           </div>
         )}
       </Card>
+
+      {/* AI Diagnostics & Observability Toggle Card */}
+      <AiDiagnosticsToggleCard />
 
       <Card>
         <SectionTitle>Preferences</SectionTitle>
@@ -71,6 +74,66 @@ export default function SettingsPage() {
         </Button>
       </Card>
     </div>
+  );
+}
+
+function AiDiagnosticsToggleCard() {
+  const { t } = useTranslation();
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("fb.ai_eval_enabled") === "true";
+  });
+
+  const toggle = () => {
+    const nextState = !enabled;
+    setEnabled(nextState);
+    localStorage.setItem("fb.ai_eval_enabled", nextState ? "true" : "false");
+    // Broadcast change for other components (like AppShell sidebar)
+    window.dispatchEvent(new Event("storage"));
+    window.dispatchEvent(new CustomEvent("fb_ai_eval_toggle", { detail: { enabled: nextState } }));
+  };
+
+  return (
+    <Card className="border-brand/30 bg-surface">
+      <SectionTitle right={<Cpu size={16} className="text-brand" />}>
+        {t("settings.aiDiagnosticsTitle")}
+      </SectionTitle>
+
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-ink">
+            {t("settings.aiDiagnosticsToggle")}
+          </p>
+          <p className="text-xs text-muted max-w-xl">
+            {t("settings.aiDiagnosticsDesc")}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Badge tone={enabled ? "brand" : "neutral"}>
+            {enabled
+              ? t("settings.aiDiagnosticsEnabled")
+              : t("settings.aiDiagnosticsDisabled")}
+          </Badge>
+
+          <button
+            type="button"
+            onClick={toggle}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+              enabled ? "bg-brand" : "bg-raised border-line"
+            }`}
+            role="switch"
+            aria-checked={enabled}
+          >
+            <span
+              aria-hidden="true"
+              className={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+    </Card>
   );
 }
 

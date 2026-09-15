@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     gocardless_env: str = "sandbox"
     basiq_api_key: str | None = None
     basiq_env: str = "sandbox"
+    stripe_api_key: str | None = None
+    stripe_webhook_secret: str | None = None
 
     fx_api_base: str = "https://open.er-api.com/v6/latest"
 
