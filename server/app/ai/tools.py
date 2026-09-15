@@ -14,6 +14,12 @@ from sqlalchemy import func, select
 
 from app.ai.pii import mask_pii
 from app.models import Account, Alert, Budget, BudgetEnvelope, Category, Debt, Goal, Transaction
+from app.models.tax import TaxCategory, TaxDeduction, TaxProfile
+from app.services.tax_engine import (
+    calculate_estimated_tax,
+    calculate_gst_liability,
+    get_deduction_summary,
+)
 
 _ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("agent_ctx", default={})
 
@@ -216,6 +222,116 @@ ALL_TOOLS = [
     forecast_cashflow, goal_overview, debt_overview, recent_alerts,
     subscriptions_detected,
 ]
+
+
+# ── Tax Specialist Tools ────────────────────────────────────────────────
+
+@tool
+async def tax_summary(tax_year: int = 2026) -> str:
+    """Calculate Australian estimated income tax, total gross income, claimed deductions, taxable income, and Medicare levy for a tax year."""
+    db = await get_db_session()
+    start_date = date(tax_year, 1, 1)
+    end_date = date(tax_year, 12, 31)
+
+    income_stmt = select(func.sum(Transaction.amount_minor)).where(
+        Transaction.user_id == uid(),
+        Transaction.date >= start_date,
+        Transaction.date <= end_date,
+        Transaction.is_income.is_(True),
+        Transaction.excluded.is_(False),
+    )
+    raw_income = await db.scalar(income_stmt)
+    gross_income_minor = max(0, raw_income or 0)
+
+    ded_summary = await get_deduction_summary(uid(), tax_year, db)
+
+    tax_res = calculate_estimated_tax(
+        gross_income_minor=gross_income_minor,
+        deductions_minor=ded_summary.total_deductions_minor,
+        country="AU",
+    )
+
+    return (
+        f"Tax Summary for {tax_year} (AU):\n"
+        f"- Gross Income: ${tax_res.gross_income_minor / 100:.2f} AUD\n"
+        f"- Total Deductions: ${tax_res.total_deductions_minor / 100:.2f} AUD ({ded_summary.total_count} claim(s))\n"
+        f"- Taxable Income: ${tax_res.taxable_income_minor / 100:.2f} AUD\n"
+        f"- Base Income Tax: ${tax_res.base_tax_minor / 100:.2f} AUD\n"
+        f"- Medicare Levy (2%): ${tax_res.medicare_levy_minor / 100:.2f} AUD\n"
+        f"- Estimated Total Tax Liability: ${tax_res.estimated_tax_minor / 100:.2f} AUD\n"
+        f"- Effective Tax Rate: {tax_res.effective_rate_pct:.2f}%"
+    )
+
+
+@tool
+async def deduction_overview(tax_year: int = 2026) -> str:
+    """Return category breakdown of claimed tax deductions, total amounts, and GST claimed for a given tax year."""
+    db = await get_db_session()
+    ded_summary = await get_deduction_summary(uid(), tax_year, db)
+    if not ded_summary.categories:
+        return f"No tax deductions recorded for tax year {tax_year}."
+
+    lines = [
+        f"- {cat.category_name} ({cat.category_code}): ${cat.total_amount_minor / 100:.2f} AUD "
+        f"across {cat.count} claim(s) (GST claimed: ${cat.total_gst_claimed_minor / 100:.2f} AUD)"
+        for cat in ded_summary.categories
+    ]
+    return (
+        f"Tax Deductions for {tax_year} (Total: ${ded_summary.total_deductions_minor / 100:.2f} AUD, "
+        f"Total GST Claimed: ${ded_summary.total_gst_claimed_minor / 100:.2f} AUD, Claims: {ded_summary.total_count}):\n"
+        + "\n".join(lines)
+    )
+
+
+@tool
+async def gst_report(tax_year: int = 2026, quarter: int = 1) -> str:
+    """Return Business Activity Statement (BAS) preparation report for GST reporting (G1 total sales, 1A GST on sales, 1B GST on purchases, Net GST)."""
+    db = await get_db_session()
+    quarter_dates = {
+        1: (date(tax_year, 1, 1), date(tax_year, 3, 31)),
+        2: (date(tax_year, 4, 1), date(tax_year, 6, 30)),
+        3: (date(tax_year, 7, 1), date(tax_year, 9, 30)),
+        4: (date(tax_year, 10, 1), date(tax_year, 12, 31)),
+    }
+    start_d, end_d = quarter_dates.get(quarter, quarter_dates[1])
+
+    sales_stmt = select(func.sum(Transaction.amount_minor)).where(
+        Transaction.user_id == uid(),
+        Transaction.date >= start_d,
+        Transaction.date <= end_d,
+        Transaction.is_income.is_(True),
+        Transaction.excluded.is_(False),
+    )
+    raw_sales = await db.scalar(sales_stmt)
+    g1_total_sales_minor = max(0, raw_sales or 0)
+    g1a_gst_on_sales_minor = round(g1_total_sales_minor / 11)
+
+    gst_purchases_stmt = select(func.sum(TaxDeduction.gst_claimed_minor)).where(
+        TaxDeduction.user_id == uid(),
+        TaxDeduction.tax_year == tax_year,
+    )
+    raw_gst_purchases = await db.scalar(gst_purchases_stmt)
+    g1b_gst_on_purchases_minor = max(0, raw_gst_purchases or 0)
+
+    gst_res = calculate_gst_liability(
+        sales_gst_minor=g1a_gst_on_sales_minor,
+        purchases_gst_minor=g1b_gst_on_purchases_minor,
+        quarter=quarter,
+        g1_total_sales_minor=g1_total_sales_minor,
+    )
+    status_label = "Refund" if gst_res.is_refund else "Payable"
+
+    return (
+        f"BAS GST Report for {tax_year} Q{quarter}:\n"
+        f"- G1 (Total Sales): ${gst_res.g1_total_sales_minor / 100:.2f} AUD\n"
+        f"- 1A (GST on Sales): ${gst_res.g1a_gst_on_sales_minor / 100:.2f} AUD\n"
+        f"- 1B (GST on Purchases / Credits): ${gst_res.g1b_gst_on_purchases_minor / 100:.2f} AUD\n"
+        f"- Net GST {status_label}: ${abs(gst_res.net_gst_minor) / 100:.2f} AUD"
+    )
+
+
+ALL_TAX_TOOLS = [tax_summary, deduction_overview, gst_report]
+ALL_TOOLS = ALL_TOOLS + ALL_TAX_TOOLS
 
 
 # ── Write tools (explicit user-intent only) ─────────────────────────────

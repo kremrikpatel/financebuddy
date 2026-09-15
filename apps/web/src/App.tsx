@@ -11,6 +11,9 @@ import DebtsPage from "@/pages/Debts";
 import CoachPage from "@/pages/Coach";
 import ConnectionsPage from "@/pages/Connections";
 import SettingsPage from "@/pages/Settings";
+import FamilyPage from "@/pages/Family";
+import TaxPage from "@/pages/Tax";
+import AiEvalPage from "@/pages/AiEval";
 
 export default function App() {
   const accessToken = useAuth((s) => s.accessToken);
@@ -39,7 +42,10 @@ export default function App() {
         <Route path="/goals" element={<GoalsPage />} />
         <Route path="/debts" element={<DebtsPage />} />
         <Route path="/coach" element={<CoachPage />} />
+        <Route path="/family" element={<FamilyPage />} />
+        <Route path="/tax" element={<TaxPage />} />
         <Route path="/connections" element={<ConnectionsPage />} />
+        <Route path="/ai-eval" element={<AiEvalPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -9,12 +9,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api import ai as ai_router
 from app.api import auth as auth_router
 from app.api import chat as chat_router
+from app.api import family as family_router
 from app.api import finance as finance_router
 from app.api import integrations as integrations_router
 from app.api import planning as planning_router
 from app.api import system as system_router
+from app.api import tax as tax_router
 from app.api import ws as ws_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
@@ -66,6 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.exception_handler(AuthError)
 async def auth_error_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
@@ -80,6 +84,9 @@ app.include_router(planning_router.router, prefix=f"{API}/planning")
 app.include_router(planning_router.router, prefix=f"{API}/finance/planning")
 app.include_router(planning_router.router, prefix=f"{API}/finance")
 app.include_router(integrations_router.router, prefix=API)
+app.include_router(family_router.router, prefix=API)
+app.include_router(tax_router.router, prefix=API)
+app.include_router(ai_router.router, prefix=API)
 app.include_router(chat_router.router, prefix=API)
 app.include_router(system_router.router, prefix=API)
 app.include_router(ws_router.router)

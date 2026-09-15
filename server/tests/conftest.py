@@ -106,17 +106,19 @@ async def async_client(client: AsyncClient) -> AsyncIterator[AsyncClient]:
 
 @pytest.fixture
 async def test_user(db_session: AsyncSession) -> User:
-    user = User(
-        email="testuser@example.com",
-        password_hash=hash_password("TestPass123!"),
-        full_name="Test User",
-        locale="en",
-        base_currency="USD",
-        is_active=True,
-    )
-    db_session.add(user)
-    await db_session.commit()
-    await db_session.refresh(user)
+    user = await db_session.scalar(select(User).where(User.email == "testuser@example.com"))
+    if not user:
+        user = User(
+            email="testuser@example.com",
+            password_hash=hash_password("TestPass123!"),
+            full_name="Test User",
+            locale="en",
+            base_currency="USD",
+            is_active=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
     return user
 
 
@@ -150,16 +152,22 @@ async def auth_tokens(db_session: AsyncSession, test_user: User) -> dict[str, st
 @pytest.fixture
 async def test_account(db_session: AsyncSession, test_user: User) -> Account:
     """Provide a default active depository checking account for test_user."""
-    account = Account(
-        user_id=test_user.id,
-        name="Main Everyday Checking",
-        type="depository",
-        subtype="checking",
-        currency="USD",
-        balance_minor=500000,
-        is_manual=True,
+    account = await db_session.scalar(
+        select(Account).where(
+            Account.user_id == test_user.id, Account.name == "Main Everyday Checking"
+        )
     )
-    db_session.add(account)
-    await db_session.commit()
-    await db_session.refresh(account)
+    if not account:
+        account = Account(
+            user_id=test_user.id,
+            name="Main Everyday Checking",
+            type="depository",
+            subtype="checking",
+            currency="USD",
+            balance_minor=500000,
+            is_manual=True,
+        )
+        db_session.add(account)
+        await db_session.commit()
+        await db_session.refresh(account)
     return account

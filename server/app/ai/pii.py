@@ -50,6 +50,7 @@ def mask_pii(text: str) -> str:
 
     out = PHONE_INTL.sub(phone_repl, out)
     out = re.sub(r"\btfn\b[:\s]*[\d\s]{8,}", "[TFN] ", out, flags=re.I)
+    out = TFN.sub("[TFN]", out)
 
     # residual long account numbers
     out = re.sub(r"\b\d{12,17}\b", "[ACCOUNT]", out)
