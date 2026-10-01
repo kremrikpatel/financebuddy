@@ -175,8 +175,12 @@ async def test_chat_api_with_page_context_and_eval_logging(
     test_user: User,
     auth_headers: dict[str, str],
     db_session: AsyncSession,
+    monkeypatch,
 ):
     """Verify chat API executes with page_context and logs an AiEvalLog entry with route_chosen='tax'."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "jev_enabled", False)  # this test covers the LLM path's token logging
     payload = {
         "message": "What is my tax summary for 2026?",
         "agent_mode": "auto",

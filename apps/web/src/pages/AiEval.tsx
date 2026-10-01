@@ -2,28 +2,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import {
-  Cpu,
-  ShieldCheck,
-  Activity,
-  Zap,
-  Clock,
-  Layers,
-  ChevronLeft,
-  ChevronRight,
-  Filter,
-  Settings as SettingsIcon,
-  CheckCircle2,
-} from "lucide-react";
+import { Cpu, ShieldCheck, Activity, Zap, Clock, Layers, ChevronLeft, ChevronRight, Settings as SettingsIcon } from "lucide-react";
 import { http } from "@/lib/api";
-import {
-  Badge,
-  Button,
-  Card,
-  SectionTitle,
-  Select,
-  Spinner,
-} from "@/components/ui";
+import { useCoachContext } from "@/lib/coachTabs";
+import { Badge, Button, Card, SectionTitle, Select, Spinner, PageHeader, StatTile, Table, EmptyState, IconButton } from "@/components/ui";
 
 interface AiEvalLog {
   id: string;
@@ -49,46 +31,55 @@ interface AiEvalHistoryResponse {
   limit: number;
 }
 
+const ROUTES = ["coach", "budget", "tax", "fraud", "goals"] as const;
+
+const routeTone = (route: string): "brand" | "pos" | "warn" | "neutral" => {
+  switch (route.toLowerCase()) {
+    case "tax":
+      return "brand";
+    case "budget":
+    case "goals":
+      return "pos";
+    case "fraud":
+      return "warn";
+    default:
+      return "neutral";
+  }
+};
+
+const latencyTone = (ms: number): "pos" | "warn" | "neg" => (ms < 500 ? "pos" : ms < 1500 ? "warn" : "neg");
+
 export default function AiEvalPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const isEnabled = localStorage.getItem("fb.ai_eval_enabled") === "true";
   const [page, setPage] = useState<number>(1);
-  const [limit, setLimit] = useState<number>(20);
+  const [limit] = useState<number>(20);
   const [selectedRoute, setSelectedRoute] = useState<string>("all");
 
   const { data, isLoading, refetch } = useQuery<AiEvalHistoryResponse>({
     queryKey: ["ai-eval-history", page, limit],
-    queryFn: async () => {
-      const res = await http.get(`/ai/eval/history?page=${page}&limit=${limit}`);
-      return res.data;
-    },
+    queryFn: async () => (await http.get(`/ai/eval/history?page=${page}&limit=${limit}`)).data,
     enabled: isEnabled,
   });
+
+  useCoachContext({ diagnostics_enabled: isEnabled, page, route_filter: selectedRoute, total_logged: data?.total ?? null });
 
   if (!isEnabled) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-ink">{t("aiEval.title")}</h1>
-          <p className="text-sm text-muted">{t("aiEval.subtitle")}</p>
-        </div>
-
-        <Card className="flex flex-col items-center justify-center p-12 text-center">
-          <div className="mb-4 grid size-16 place-items-center rounded-2xl bg-brand/10 text-brand">
-            <Cpu size={32} />
-          </div>
-          <h2 className="text-lg font-semibold text-ink">
-            {t("aiEval.disabledNotice")}
-          </h2>
-          <p className="mt-1 max-w-md text-sm text-muted">
-            {t("aiEval.enablePrompt")}
-          </p>
-          <Link to="/settings" className="mt-6">
-            <Button className="flex items-center gap-2">
-              <SettingsIcon size={16} /> {t("aiEval.openSettings")}
-            </Button>
-          </Link>
+        <PageHeader title={t("aiEval.title")} subtitle={t("aiEval.subtitle")} />
+        <Card>
+          <EmptyState
+            icon={<Cpu size={22} />}
+            title={t("aiEval.disabledNotice")}
+            body={t("aiEval.enablePrompt")}
+            action={
+              <Link to="/settings" className="btn-primary">
+                <SettingsIcon size={16} aria-hidden /> {t("aiEval.openSettings")}
+              </Link>
+            }
+          />
         </Card>
       </div>
     );
@@ -97,252 +88,128 @@ export default function AiEvalPage() {
   const items = data?.items || [];
   const total = data?.total || 0;
   const totalPages = Math.ceil(total / limit) || 1;
-
-  // Filter items by route if selected
   const filteredItems =
-    selectedRoute === "all"
-      ? items
-      : items.filter((log) => log.route_chosen.toLowerCase() === selectedRoute.toLowerCase());
+    selectedRoute === "all" ? items : items.filter((log) => log.route_chosen.toLowerCase() === selectedRoute.toLowerCase());
 
-  // Aggregate stats
   const totalTokens = items.reduce((sum, item) => sum + (item.tokens_in + item.tokens_out), 0);
-  const avgLatency =
-    items.length > 0
-      ? Math.round(items.reduce((sum, item) => sum + item.latency_ms, 0) / items.length)
-      : 0;
+  const avgLatency = items.length > 0 ? Math.round(items.reduce((sum, item) => sum + item.latency_ms, 0) / items.length) : 0;
   const totalPii = items.reduce((sum, item) => sum + item.pii_fields_masked, 0);
-
-  const routeTone = (route: string): "brand" | "pos" | "warn" | "neutral" => {
-    switch (route.toLowerCase()) {
-      case "tax":
-        return "brand";
-      case "budget":
-        return "pos";
-      case "fraud":
-        return "warn";
-      case "goals":
-        return "pos";
-      default:
-        return "neutral";
-    }
-  };
-
-  const latencyTone = (ms: number): "pos" | "warn" | "neg" => {
-    if (ms < 500) return "pos";
-    if (ms < 1500) return "warn";
-    return "neg";
-  };
+  const rtl = i18n.dir() === "rtl";
+  const nf = new Intl.NumberFormat(i18n.language);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-ink">{t("aiEval.title")}</h1>
-            <Badge tone="brand">Real-time Telemetry</Badge>
-          </div>
-          <p className="text-sm text-muted">{t("aiEval.subtitle")}</p>
-        </div>
+      <PageHeader
+        title={t("aiEval.title")}
+        subtitle={t("aiEval.subtitle")}
+        actions={
+          <Button variant="secondary" size="sm" onClick={() => void refetch()}>
+            <Activity size={14} aria-hidden /> {t("aiEval.refresh")}
+          </Button>
+        }
+      />
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void refetch()}
-          className="flex items-center gap-1.5"
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <StatTile label={t("aiEval.totalQueries")} icon={<Zap size={18} />} value={<span className="num">{nf.format(total)}</span>} hint={t("aiEval.acrossSessions")} />
+        <StatTile label={t("aiEval.avgLatency")} icon={<Clock size={18} />} value={<span className="num">{t("aiEval.ms", { ms: nf.format(avgLatency) })}</span>} hint={t("aiEval.supervisorModel")} />
+        <StatTile label={t("aiEval.totalTokens")} icon={<Layers size={18} />} value={<span className="num">{nf.format(totalTokens)}</span>} hint={t("aiEval.promptCompletion")} />
+        <StatTile label={t("aiEval.piiRedacted")} tone="pos" icon={<ShieldCheck size={18} />} value={<span className="num">{nf.format(totalPii)}</span>} hint={t("aiEval.redactions")} />
+      </div>
+
+      <Card as="section">
+        <SectionTitle
+          right={
+            <label className="flex items-center gap-2 text-sm text-muted">
+              {t("aiEval.filterRoute")}
+              <Select value={selectedRoute} onChange={(e) => setSelectedRoute(e.target.value)} className="h-9 w-36 py-0">
+                <option value="all">{t("aiEval.allRoutes")}</option>
+                {ROUTES.map((r) => (
+                  <option key={r} value={r}>{t(`coach.modes.${r}`)}</option>
+                ))}
+              </Select>
+            </label>
+          }
         >
-          <Activity size={14} /> Refresh Logs
-        </Button>
-      </div>
-
-      {/* Overview Stats */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("aiEval.totalQueries")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-brand/10 text-brand">
-              <Zap size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">{total}</p>
-          <p className="mt-1 text-xs text-muted">Across all sessions</p>
-        </Card>
-
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("aiEval.avgLatency")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-pos/10 text-pos">
-              <Clock size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">{avgLatency} ms</p>
-          <p className="mt-1 text-xs text-muted">Supervisor + Model execution</p>
-        </Card>
-
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("aiEval.totalTokens")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
-              <Layers size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {totalTokens.toLocaleString()}
-          </p>
-          <p className="mt-1 text-xs text-muted">Prompt + Completion</p>
-        </Card>
-
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("aiEval.piiRedacted")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-pos/10 text-pos">
-              <ShieldCheck size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-pos">{totalPii}</p>
-          <p className="mt-1 text-xs text-muted">Account & card redactions</p>
-        </Card>
-      </div>
-
-      {/* Logs Table */}
-      <Card>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <SectionTitle>{t("aiEval.logsTable")}</SectionTitle>
-
-          {/* Route Filter */}
-          <div className="flex items-center gap-2">
-            <Filter size={14} className="text-muted" />
-            <span className="text-xs text-muted font-medium">{t("aiEval.filterRoute")}:</span>
-            <Select
-              value={selectedRoute}
-              onChange={(e) => setSelectedRoute(e.target.value)}
-              className="h-8 py-0 text-xs w-32"
-            >
-              <option value="all">{t("aiEval.allRoutes")}</option>
-              <option value="coach">Coach</option>
-              <option value="budget">Budget</option>
-              <option value="tax">Tax</option>
-              <option value="fraud">Fraud</option>
-              <option value="goals">Goals</option>
-            </Select>
-          </div>
-        </div>
+          {t("aiEval.logsTable")}
+        </SectionTitle>
 
         {isLoading ? (
           <Spinner />
         ) : filteredItems.length === 0 ? (
-          <div className="py-12 text-center text-sm text-muted">
-            {t("aiEval.noLogs")}
-          </div>
+          <EmptyState title={t("aiEval.noLogs")} />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-line text-muted">
-                <tr>
-                  <th className="py-2.5 px-3">{t("aiEval.timestamp")}</th>
-                  <th className="py-2.5 px-3">{t("aiEval.query")}</th>
-                  <th className="py-2.5 px-3">{t("aiEval.route")}</th>
-                  <th className="py-2.5 px-3">{t("aiEval.model")}</th>
-                  <th className="py-2.5 px-3 text-right">{t("aiEval.latency")}</th>
-                  <th className="py-2.5 px-3 text-right">{t("aiEval.tokens")}</th>
-                  <th className="py-2.5 px-3 text-center">{t("aiEval.confidence")}</th>
-                  <th className="py-2.5 px-3 text-center">{t("aiEval.piiCount")}</th>
+          <Table label={t("aiEval.logsTable")}>
+            <thead>
+              <tr>
+                <th>{t("aiEval.timestamp")}</th>
+                <th>{t("aiEval.query")}</th>
+                <th>{t("aiEval.route")}</th>
+                <th className="hidden md:table-cell">{t("aiEval.model")}</th>
+                <th className="!text-end">{t("aiEval.latency")}</th>
+                <th className="hidden !text-end lg:table-cell">{t("aiEval.tokens")}</th>
+                <th className="hidden !text-center lg:table-cell">{t("aiEval.confidence")}</th>
+                <th className="!text-center">{t("aiEval.piiCount")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.map((log) => (
+                <tr key={log.id}>
+                  <td className="num whitespace-nowrap text-muted">
+                    {new Date(log.created_at).toLocaleString(i18n.language, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </td>
+                  <td className="max-w-xs"><span className="line-clamp-1 font-medium text-ink">{log.query_summary || t("aiEval.defaultQuery")}</span></td>
+                  <td className="whitespace-nowrap"><Badge tone={routeTone(log.route_chosen)}>{t(`coach.modes.${log.route_chosen}`, log.route_chosen)}</Badge></td>
+                  <td className="hidden whitespace-nowrap md:table-cell">
+                    <span className="font-medium capitalize text-ink">{log.provider_used}</span>
+                    <span className="ms-1 text-muted">({log.model_name})</span>
+                  </td>
+                  <td className="whitespace-nowrap text-end"><Badge tone={latencyTone(log.latency_ms)}>{t("aiEval.ms", { ms: log.latency_ms })}</Badge></td>
+                  <td className="num hidden whitespace-nowrap text-end text-muted lg:table-cell">
+                    {t("aiEval.tokensInOut", { in: log.tokens_in, out: log.tokens_out })}
+                  </td>
+                  <td className="num hidden text-center text-ink lg:table-cell">{Math.round(log.confidence_score * 100)}%</td>
+                  <td className="text-center">
+                    {log.pii_fields_masked > 0 ? (
+                      <span className="inline-flex items-center gap-1 font-semibold text-pos">
+                        <ShieldCheck size={14} aria-hidden /> {log.pii_fields_masked}
+                      </span>
+                    ) : (
+                      <span className="text-muted">0</span>
+                    )}
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-line/60">
-                {filteredItems.map((log) => {
-                  const dateStr = new Date(log.created_at).toLocaleString([], {
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  });
-
-                  return (
-                    <tr key={log.id} className="hover:bg-raised/40 transition">
-                      <td className="py-3 px-3 whitespace-nowrap text-muted font-mono text-[11px]">
-                        {dateStr}
-                      </td>
-                      <td className="py-3 px-3 max-w-xs truncate font-medium text-ink">
-                        {log.query_summary || "Financial query"}
-                      </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <Badge tone={routeTone(log.route_chosen)}>
-                          {log.route_chosen}
-                        </Badge>
-                      </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <span className="font-semibold text-ink capitalize">{log.provider_used}</span>
-                        <span className="ml-1 text-[11px] text-muted">({log.model_name})</span>
-                      </td>
-                      <td className="py-3 px-3 text-right whitespace-nowrap">
-                        <Badge tone={latencyTone(log.latency_ms)}>
-                          {log.latency_ms} ms
-                        </Badge>
-                      </td>
-                      <td className="py-3 px-3 text-right whitespace-nowrap text-muted">
-                        <span className="font-medium text-ink">{log.tokens_in}</span> in /{" "}
-                        <span className="font-medium text-ink">{log.tokens_out}</span> out
-                      </td>
-                      <td className="py-3 px-3 text-center whitespace-nowrap font-medium text-ink">
-                        {Math.round(log.confidence_score * 100)}%
-                      </td>
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {log.pii_fields_masked > 0 ? (
-                          <span className="inline-flex items-center gap-1 font-semibold text-pos">
-                            <ShieldCheck size={13} /> {log.pii_fields_masked}
-                          </span>
-                        ) : (
-                          <span className="text-muted">0</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </Table>
         )}
 
-        {/* Pagination Footer */}
         {total > limit && (
-          <div className="mt-4 flex items-center justify-between border-t border-line/60 pt-3 text-xs text-muted">
-            <span>
-              Showing {(page - 1) * limit + 1} - {Math.min(page * limit, total)} of {total}
-            </span>
+          <nav aria-label={t("aiEval.pagination")} className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3 text-sm text-muted">
+            <span>{t("aiEval.showing", { from: (page - 1) * limit + 1, to: Math.min(page * limit, total), total })}</span>
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
+              <IconButton
+                variant="secondary"
+                label={t("aiEval.prev")}
+                icon={rtl ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="size-8 p-0"
-              >
-                <ChevronLeft size={14} />
-              </Button>
-              <span className="font-medium text-ink">
-                Page {page} of {totalPages}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
+              />
+              <span className="font-medium text-ink">{t("aiEval.pageOf", { page, total: totalPages })}</span>
+              <IconButton
+                variant="secondary"
+                label={t("aiEval.next")}
+                icon={rtl ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
                 disabled={page >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="size-8 p-0"
-              >
-                <ChevronRight size={14} />
-              </Button>
+              />
             </div>
-          </div>
+          </nav>
         )}
       </Card>
     </div>

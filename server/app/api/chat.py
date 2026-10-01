@@ -2,54 +2,112 @@ from __future__ import annotations
 
 import time as _time
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from langchain_core.messages import AIMessage, HumanMessage
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.graph import route_of, run_chat
-from app.ai.guardrails import chat_rate_limiter, check_guardrails
+from app.ai.graph import run_chat
 from app.ai.pii import mask_pii
-from app.core.config import settings
+from app.ai.tools import new_collector
 from app.db.session import get_db
 from app.models import ChatMessage, ChatThread, User
-from app.models.ai import AiEvalLog
+from app.services import chat_service
+from app.services.chat_service import SendIn
 from app.services.deps import get_current_user
 
 router = APIRouter(prefix="/chat", tags=["ai"])
 
 
-class SendIn(BaseModel):
-    thread_id: uuid.UUID | None = None
-    message: str = Field(min_length=1, max_length=8000)
-    agent_mode: str = "auto"
-    page_context: str | None = None
-
-
 class MessageOut(BaseModel):
+    id: uuid.UUID | None = None
     role: str
     content: str
     provider: str | None = None
     created_at: object | None = None
+    blocks: list[dict] = []
+    actions: list[dict] = []
 
-    model_config = {"from_attributes": True}
+
+class ThreadPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    pinned: bool | None = None
+
+
+class ActionDecision(BaseModel):
+    decision: str = Field(pattern="^(confirm|cancel)$")
+
+
+def _thread_out(t: ChatThread, preview: str | None = None, pending: int = 0) -> dict:
+    return {
+        "id": str(t.id),
+        "title": t.title,
+        "agent_mode": t.agent_mode,
+        "source_tab": t.source_tab,
+        "context": t.context,
+        "pinned": bool(t.pinned),
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "preview": preview,
+        "pending_actions": pending,
+    }
 
 
 @router.get("/threads")
 async def list_threads(
-    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    q: str | None = Query(default=None, max_length=200),
+    source_tab: str | None = Query(default=None, max_length=40),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    rows = (
-        await db.execute(
-            select(ChatThread)
-            .where(ChatThread.user_id == user.id, ChatThread.archived.is_(False))
-            .order_by(ChatThread.updated_at.desc())
-            .limit(50)
-        )
-    ).scalars().all()
-    return [{"id": t.id.__str__(), "title": t.title, "agent_mode": t.agent_mode} for t in rows]
+    stmt = select(ChatThread).where(ChatThread.user_id == user.id, ChatThread.archived.is_(False))
+    if source_tab:
+        stmt = stmt.where(ChatThread.source_tab == source_tab)
+    if since:
+        stmt = stmt.where(ChatThread.updated_at >= since)
+    if until:
+        stmt = stmt.where(ChatThread.updated_at <= until)
+    if q:
+        like = f"%{q.lower()}%"
+        matching = select(ChatMessage.thread_id).where(func.lower(ChatMessage.content).like(like))
+        stmt = stmt.where(or_(func.lower(ChatThread.title).like(like), ChatThread.id.in_(matching)))
+    rows = (await db.execute(
+        stmt.order_by(ChatThread.pinned.desc(), ChatThread.updated_at.desc()).limit(100))).scalars().all()
+
+    out = []
+    for t in rows:
+        # ponytail: one query per thread (max 100); batch with a window query if the hub gets slow.
+        last = (await db.execute(
+            select(ChatMessage).where(ChatMessage.thread_id == t.id)
+            .order_by(ChatMessage.created_at.desc()).limit(20))).scalars().all()
+        pending = sum(1 for m in last for a in (m.tool_calls or {}).get("actions", [])
+                      if a.get("status") == "pending")
+        preview = last[0].content[:140] if last else None
+        out.append(_thread_out(t, preview, pending))
+    return out
+
+
+@router.patch("/threads/{thread_id}")
+async def update_thread(
+    thread_id: uuid.UUID,
+    body: ThreadPatch,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await db.scalar(select(ChatThread).where(
+        ChatThread.id == thread_id, ChatThread.user_id == user.id, ChatThread.archived.is_(False)))
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    if body.title is not None:
+        thread.title = mask_pii(body.title.strip())[:300]
+    if body.pinned is not None:
+        thread.pinned = body.pinned
+    await db.flush()
+    return _thread_out(thread)
 
 
 @router.post("/send", response_model=dict)
@@ -58,209 +116,27 @@ async def send(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Validate non-empty, non-whitespace message
-    if not body.message or not body.message.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Message cannot be empty or whitespace only",
-        )
-
-    # 1. Enforce sliding-window rate limit (max 30 requests/minute per user)
-    chat_rate_limiter.enforce_rate_limit(user.id)
-
-    # 2. Content filter: Guardrails check (prompt injection & non-financial redirection)
-    guardrail = check_guardrails(body.message)
-    if not guardrail.allowed:
-        # Create thread if not provided
-        if body.thread_id:
-            thread = await db.scalar(
-                select(ChatThread).where(
-                    ChatThread.id == body.thread_id, ChatThread.user_id == user.id
-                )
-            )
-            if not thread:
-                raise HTTPException(status_code=404, detail="Thread not found")
-        else:
-            masked_title = mask_pii(body.message)
-            thread = ChatThread(
-                user_id=user.id,
-                title=masked_title[:60] + ("…" if len(masked_title) > 60 else ""),
-                agent_mode=body.agent_mode,
-            )
-            db.add(thread)
-            await db.flush()
-
-        masked_user_content = mask_pii(body.message)
-        user_msg = ChatMessage(
-            thread_id=thread.id,
-            role="user",
-            content=masked_user_content,
-        )
-        reply_content = (
-            guardrail.redirection_message
-            or "I am FinanceBuddy, your personal finance coach. Please ask a financial question."
-        )
-        assistant_msg = ChatMessage(
-            thread_id=thread.id,
-            role="assistant",
-            content=reply_content,
-            provider="guardrails",
-            latency_ms=5,
-        )
-        db.add_all([user_msg, assistant_msg])
-        await db.flush()
-
-        # Log AI Evaluation entry
-        eval_log = AiEvalLog(
-            user_id=user.id,
-            thread_id=thread.id,
-            message_id=assistant_msg.id,
-            provider_used="guardrails",
-            model_name="rule-guardrails-filter",
-            tokens_in=len(body.message.split()),
-            tokens_out=len(reply_content.split()),
-            latency_ms=5,
-            route_chosen=route_of(body.agent_mode, body.message, page_context=body.page_context),
-            confidence_score=1.0,
-            pii_fields_masked=0,
-            query_summary=masked_user_content[:120],
-        )
-        db.add(eval_log)
+    turn = await chat_service.begin_turn(db, user, body)
+    if turn.blocked:
         await db.commit()
+        return turn.blocked
 
-        return {
-            "thread_id": str(thread.id),
-            "reply": {
-                "role": "assistant",
-                "content": reply_content,
-                "provider": "guardrails",
-                "latency_ms": 5,
-            },
-        }
-
-    # 3. Thread lookup or initialization
-    if body.thread_id:
-        thread = await db.scalar(
-            select(ChatThread).where(
-                ChatThread.id == body.thread_id, ChatThread.user_id == user.id
-            )
-        )
-        if not thread:
-            raise HTTPException(status_code=404, detail="Thread not found")
-    else:
-        masked_title = mask_pii(body.message)
-        thread = ChatThread(
-            user_id=user.id,
-            title=masked_title[:60] + ("…" if len(masked_title) > 60 else ""),
-            agent_mode=body.agent_mode,
-        )
-        db.add(thread)
-        await db.flush()
-
-    # 4. PII Redaction & Metrics
-    raw_message = body.message
-    masked_message = mask_pii(raw_message)
-    pii_count = (
-        raw_message.count("@") - masked_message.count("@")
-        + (1 if "[CARD" in masked_message else 0)
-        + (1 if "[PHONE" in masked_message else 0)
-        + (1 if "[SSN" in masked_message or "[TFN" in masked_message else 0)
-        + (1 if "[EMAIL" in masked_message else 0)
-        + (1 if "[IBAN" in masked_message else 0)
-        + (1 if "[ACCOUNT" in masked_message else 0)
-    )
-    pii_count = max(0, pii_count)
-    if masked_message != raw_message and pii_count == 0:
-        pii_count = 1
-
-    user_msg = ChatMessage(
-        thread_id=thread.id,
-        role="user",
-        content=masked_message,
-    )
-    db.add(user_msg)
-
-    # 5. Fetch previous thread history
-    history = list(
-        (
-            await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.thread_id == thread.id)
-                .order_by(ChatMessage.created_at)
-                .limit(30)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    lc_messages = [
-        HumanMessage(content=m.content) if m.role == "user" else AIMessage(content=m.content)
-        for m in history
-    ]
-    lc_messages.append(HumanMessage(content=user_msg.content))
-
-    # 6. Execute AI conversation flow
+    collector = new_collector()
     started = _time.perf_counter()
     reply = await run_chat(
-        lc_messages,
+        turn.lc_messages,
         str(user.id),
-        str(thread.id),
+        str(turn.thread.id),
         body.agent_mode,
         page_context=body.page_context,
         db_session=db,
+        page_summary=body.page_summary,
+        collector=collector,
     )
     latency_ms = int((_time.perf_counter() - started) * 1000)
-
-    provider = (reply.response_metadata or {}).get("provider") or (
-        (getattr(reply, "response_metadata", {}) or {}).get("llm_output", {}) or {}
-    ).get("provider") or "mock_openai"
-
-    route_meta = (reply.response_metadata or {}).get("route")
-    if route_meta and route_meta in ("coach", "budget", "fraud", "goals", "tax", "assistant"):
-        route_chosen = route_meta
-    elif body.agent_mode and body.agent_mode != "auto":
-        route_chosen = body.agent_mode
-    else:
-        route_chosen = route_of(body.agent_mode, body.message, page_context=body.page_context)
-
-    assistant_msg = ChatMessage(
-        thread_id=thread.id,
-        role="assistant",
-        content=reply.content,
-        provider=provider,
-        latency_ms=latency_ms,
-    )
-    db.add(assistant_msg)
-    await db.flush()
-
-    # 7. Record AI Evaluation Metric
-    eval_log = AiEvalLog(
-        user_id=user.id,
-        thread_id=thread.id,
-        message_id=assistant_msg.id,
-        provider_used=provider,
-        model_name=settings.llm_primary_model,
-        tokens_in=max(1, len(user_msg.content.split()) * 2),
-        tokens_out=max(1, len(reply.content.split()) * 2),
-        latency_ms=latency_ms,
-        route_chosen=route_chosen,
-        confidence_score=0.95,
-        pii_fields_masked=pii_count,
-        query_summary=masked_message[:120],
-    )
-    db.add(eval_log)
+    result = await chat_service.complete_turn(db, user, body, turn, reply, latency_ms, collector)
     await db.commit()
-
-    return {
-        "thread_id": str(thread.id),
-        "reply": {
-            "role": "assistant",
-            "content": reply.content,
-            "provider": provider,
-            "latency_ms": latency_ms,
-        },
-    }
+    return result
 
 
 @router.get("/threads/{thread_id}/messages", response_model=list[MessageOut])
@@ -283,7 +159,7 @@ async def messages(
             .order_by(ChatMessage.created_at)
         )
     ).scalars().all()
-    return rows
+    return [chat_service.message_out(m) for m in rows]
 
 
 @router.delete("/threads/{thread_id}", status_code=204)
@@ -301,6 +177,30 @@ async def delete_thread(
         thread.archived = True
         await db.commit()
     return None
+
+
+# ── AI action proposals (never applied without explicit confirmation) ──
+
+@router.get("/actions")
+async def list_actions(
+    status: str = Query(default="pending", pattern="^pending$"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await chat_service.pending_actions(db, user)
+
+
+@router.post("/actions/{message_id}/{action_id}")
+async def decide_action(
+    message_id: uuid.UUID,
+    action_id: str,
+    body: ActionDecision,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    action = await chat_service.decide_action(db, user, message_id, action_id[:40], body.decision)
+    await db.commit()
+    return action
 
 
 # ── Natural-language expense quick-add ──────────────────────────────────

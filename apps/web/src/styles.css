@@ -2,20 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens (RGB triplets so Tailwind can apply /<alpha>).
+   Every text pairing below is >= 4.5:1 (WCAG 2.1 AA); `field` is >= 3:1 for UI boundaries. */
 :root {
-  --surface: 250 250 252;
-  --raised: 255 255 255;
-  --ink: 23 26 38;
-  --muted: 110 116 133;
-  --line: 228 230 238;
+  color-scheme: light;
+  --surface: 246 247 249; /* page background */
+  --raised: 255 255 255; /* cards, panels */
+  --sunken: 238 240 243; /* wells, table headers, segmented tracks */
+  --ink: 14 23 38;
+  --muted: 82 92 107;
+  --line: 221 225 231; /* decorative dividers */
+  --field: 138 148 163; /* input borders */
+  --brand: 31 79 209;
+  --brand-ink: 255 255 255;
+  --pos: 15 123 75;
+  --neg: 194 38 46;
+  --warn: 163 90 0;
+  --shadow: 14 23 38;
+  /* Categorical chart slots, fixed order (dataviz reference palette, validated on #ffffff). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --grid: #e1e4e9;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .dark {
-  --surface: 15 17 23;
-  --raised: 24 27 36;
-  --ink: 235 237 244;
-  --muted: 148 153 170;
-  --line: 42 46 58;
+  color-scheme: dark;
+  --surface: 11 15 23;
+  --raised: 18 24 38;
+  --sunken: 14 19 30;
+  --ink: 231 235 242;
+  --muted: 151 161 178;
+  --line: 36 48 68;
+  --field: 91 103 124;
+  --brand: 110 149 255;
+  --brand-ink: 11 15 23;
+  --pos: 60 203 138;
+  --neg: 255 107 112;
+  --warn: 242 178 76;
+  --shadow: 0 0 0;
+  /* Dark steps of the same hues, validated on #121826. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --grid: #243044;
 }
 
 html,
@@ -25,7 +64,17 @@ body,
 }
 
 body {
-  @apply bg-surface text-ink font-sans antialiased;
+  @apply bg-surface font-sans text-ink antialiased;
+}
+
+/* One visible focus treatment for every interactive element. */
+:focus-visible {
+  outline: 2px solid rgb(var(--brand));
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgb(var(--brand) / 0.2);
 }
 
 ::-webkit-scrollbar {
@@ -33,29 +82,69 @@ body {
   height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-line rounded-full;
+  @apply rounded-full bg-line;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.card {
-  @apply bg-raised border border-line rounded-2xl shadow-sm;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
-.input {
-  @apply w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm outline-none
-    transition focus:border-brand focus:ring-4 focus:ring-brand/10 placeholder:text-muted/60;
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-raised shadow-card;
+  }
+  .input {
+    @apply w-full rounded-lg border border-field/70 bg-raised px-3 py-2 text-base text-ink outline-none
+      transition-colors placeholder:text-muted hover:border-field
+      focus:border-brand focus:ring-2 focus:ring-brand/25 sm:text-sm
+      disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn {
+    @apply inline-flex min-h-10 cursor-pointer select-none items-center justify-center gap-2 whitespace-nowrap
+      rounded-lg px-4 py-2 text-sm font-medium transition-[background-color,border-color,color,transform]
+      duration-150 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-brand-ink hover:bg-brand/90;
+  }
+  .btn-secondary {
+    @apply btn border border-field/70 bg-raised text-ink hover:border-field hover:bg-sunken;
+  }
+  .btn-ghost {
+    @apply btn text-muted hover:bg-sunken hover:text-ink;
+  }
+  .btn-danger {
+    @apply btn bg-neg text-white hover:bg-neg/90 dark:text-surface;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .label {
+    @apply block text-sm font-medium text-ink;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
 }
-.btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium
-    transition active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
-}
-.btn-primary {
-  @apply btn bg-brand text-white hover:bg-indigo-500 shadow-lg shadow-brand/25;
-}
-.btn-ghost {
-  @apply btn hover:bg-raised border border-transparent hover:border-line;
-}
-.chip {
-  @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium;
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: var(--safe-bottom);
+  }
+  .pt-safe {
+    padding-top: var(--safe-top);
+  }
+  .bottom-safe {
+    bottom: var(--safe-bottom);
+  }
 }

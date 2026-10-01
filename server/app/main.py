@@ -70,6 +70,27 @@ app.add_middleware(
 )
 
 
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_JEV_NO_INVALIDATE = ("/chat/send", "/chat/threads", "/auth/")  # don't touch financial data
+
+
+@app.middleware("http")
+async def jev_invalidate_on_write(request: Request, call_next):
+    """Any successful write by a user may change numbers JEV cached for them."""
+    response = await call_next(request)
+    path = request.url.path
+    if (request.method in _WRITE_METHODS and response.status_code < 400
+            and not any(p in path for p in _JEV_NO_INVALIDATE)):
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            from app.core.security import decode_token
+            from app.jev import cache as jev_cache
+
+            with contextlib.suppress(Exception):
+                jev_cache.invalidate(decode_token(auth[7:]).get("sub"))
+    return response
+
+
 @app.exception_handler(AuthError)
 async def auth_error_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})

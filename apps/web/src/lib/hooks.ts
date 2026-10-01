@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useThemeStore } from "@/lib/theme";
 
 /** Web Speech API — speech-to-text (Chrome/Edge/Safari; graceful fallback). */
 export function useSpeechRecognition(lang = "en-US") {
@@ -58,13 +59,53 @@ export function speak(text: string, lang = "en-US") {
 }
 
 export function useTheme() {
-  const [dark, setDark] = useState(
-    () => localStorage.getItem("fb.theme") === "dark" ||
-      (!localStorage.getItem("fb.theme") && matchMedia("(prefers-color-scheme: dark)").matches),
-  );
+  const dark = useThemeStore((s) => s.dark);
+  const toggle = useThemeStore((s) => s.toggle);
+  return { dark, toggle };
+}
+
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/** Dialog/sheet contract: focus moves in, Tab is trapped, Esc closes, focus returns on close. */
+export function useDialogBehavior(
+  ref: RefObject<HTMLElement | null>,
+  open: boolean,
+  onClose: () => void,
+) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-    localStorage.setItem("fb.theme", dark ? "dark" : "light");
-  }, [dark]);
-  return { dark, toggle: () => setDark((d) => !d) };
+    const node = ref.current;
+    if (!open || !node) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const focusables = () => Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE));
+    if (!node.contains(document.activeElement)) (focusables()[0] ?? node).focus();
+
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    node.addEventListener("keydown", onKey);
+    return () => {
+      node.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, [open, ref]);
 }

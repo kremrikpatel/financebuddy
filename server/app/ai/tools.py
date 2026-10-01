@@ -24,8 +24,31 @@ from app.services.tax_engine import (
 _ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("agent_ctx", default={})
 
 
-def set_agent_context(db, user_id: uuid.UUID) -> None:
-    _ctx.set({"db": db, "user_id": user_id})
+def new_collector() -> dict:
+    """Per-turn sink for UI blocks and pending (never auto-applied) action proposals."""
+    return {"blocks": [], "actions": []}
+
+
+def set_agent_context(db, user_id: uuid.UUID, collector: dict | None = None) -> None:
+    _ctx.set({"db": db, "user_id": user_id, "collector": collector if collector is not None else new_collector()})
+
+
+def _collector() -> dict:
+    return agent_context().get("collector") or new_collector()
+
+
+def emit_block(block: dict) -> None:
+    """Attach structured data for the chat UI. The LLM still only sees the tool's text."""
+    blocks = _collector()["blocks"]
+    if len(blocks) < 6:
+        blocks.append(block)
+
+
+def propose(action_type: str, summary: dict, payload: dict) -> dict:
+    action = {"id": uuid.uuid4().hex[:12], "type": action_type, "status": "pending",
+              "summary": summary, "payload": payload}
+    _collector()["actions"].append(action)
+    return action
 
 
 def agent_context() -> dict:
@@ -83,6 +106,10 @@ async def search_transactions(query: str = "", category: str = "", days: int = 9
         out.append(f"{t.date.isoformat()} {t.merchant_raw[:40]} "
                    f"{t.amount_minor/100:+.2f} {t.currency}"
                    + (f" ({desc[:60]})" if desc else ""))
+    if rows:
+        emit_block({"type": "transactions", "items": [
+            {"id": str(t.id), "date": t.date.isoformat(), "merchant": t.merchant_raw[:40],
+             "amount_minor": t.amount_minor, "currency": t.currency} for t in rows[:10]]})
     return "\n".join(out) or "No matching transactions."
 
 
@@ -101,6 +128,9 @@ async def spending_summary(days: int = 30) -> str:
     rows = (await db.execute(q)).all()
     total = sum(r[1] or 0 for r in rows)
     lines = [f"- {name}: {(amt or 0)/100:.2f}" for name, amt in rows[:15]]
+    if rows:
+        emit_block({"type": "chart", "kind": "bar", "title": f"spend_by_category_{days}d",
+                    "series": [{"label": name, "value": int(amt or 0)} for name, amt in rows[:6]]})
     return f"Spend last {days}d — total {total/100:.2f}:\n" + "\n".join(lines)
 
 
@@ -116,6 +146,11 @@ async def budget_status() -> str:
         return "No active budget."
     today = date.today()
     statuses = await envelope_status(db, budget, today.year, today.month)
+    emit_block({"type": "budget_delta", "budget": budget.name, "currency": budget.currency,
+                "month": f"{today.year}-{today.month:02d}",
+                "envelopes": [{"name": s.name, "allocated_minor": s.allocated_minor,
+                               "spent_minor": s.spent_minor, "remaining_minor": s.remaining_minor,
+                               "pct_used": s.pct_used, "overspent": s.overspent} for s in statuses[:8]]})
     lines = [f"- {s.name}: allocated {s.allocated_minor/100:.2f}, spent {s.spent_minor/100:.2f}, "
              f"{'OVER by ' + format(abs(s.remaining_minor)/100, '.2f') if s.overspent else 'remaining ' + format(s.remaining_minor/100, '.2f')} ({s.pct_used}%)"
              for s in statuses]
@@ -137,6 +172,8 @@ async def forecast_cashflow(months: int = 6) -> str:
     accounts = (await db.execute(select(Account).where(Account.user_id == uid()))).scalars().all()
     balance = sum(a.balance_minor for a in accounts if a.type != "credit")
     runway = runway_months(balance, fc["forecast"])
+    emit_block({"type": "chart", "kind": "line", "title": "net_flow_forecast",
+                "series": [{"label": f"M+{i + 1}", "value": int(v)} for i, v in enumerate(fc["forecast"])]})
     trend = "rising" if fc["trend_per_month"] > 0 else ("falling" if fc["trend_per_month"] < 0 else "stable")
     msg = (f"Net-flow trend is {trend} ({fc['trend_per_month']/100:+.2f}/mo).\n"
            f"Projected next months: {[round(v/100) for v in fc['forecast']]}\n"
@@ -334,22 +371,87 @@ ALL_TAX_TOOLS = [tax_summary, deduction_overview, gst_report]
 ALL_TOOLS = ALL_TOOLS + ALL_TAX_TOOLS
 
 
-# ── Write tools (explicit user-intent only) ─────────────────────────────
+# ── Proposal tools ──────────────────────────────────────────────────────
+# These NEVER write. They record a pending action that the user must confirm in the
+# app (POST /chat/actions/{message_id}/{action_id}); only that endpoint mutates data.
+
+_PROPOSED = "Proposal prepared. Nothing has changed yet: ask the user to review and confirm it in the app."
+
+
+async def _find_category(name: str) -> Category | None:
+    db = await get_db_session()
+    return await db.scalar(select(Category).where(
+        Category.name.ilike(name.strip()),
+        (Category.user_id == uid()) | (Category.user_id.is_(None))))
+
 
 @tool
-async def create_goal_draft(name: str, target_amount: float, currency: str,
-                            monthly_amount: float, target_date_iso: str | None = None) -> str:
-    """Create a savings goal draft. Amounts in major units."""
+async def propose_goal(name: str, target_amount: float, currency: str,
+                       monthly_amount: float, target_date_iso: str | None = None) -> str:
+    """Propose a new savings goal for the user to confirm. Amounts in major units. Does not save anything."""
+    if target_amount <= 0 or monthly_amount < 0:
+        return "Target must be positive and the monthly amount cannot be negative."
+    try:
+        target_date = date.fromisoformat(target_date_iso).isoformat() if target_date_iso else None
+    except ValueError:
+        return "target_date_iso must be YYYY-MM-DD."
+    payload = {"name": name[:120], "target_minor": round(target_amount * 100), "currency": currency.upper()[:3],
+               "monthly_amount_minor": round(monthly_amount * 100), "target_date": target_date,
+               "strategy": "fixed_monthly"}
+    propose("create_goal", {"name": payload["name"], "target_minor": payload["target_minor"],
+                            "monthly_amount_minor": payload["monthly_amount_minor"],
+                            "currency": payload["currency"], "target_date": target_date}, payload)
+    return _PROPOSED
+
+
+@tool
+async def propose_budget(name: str, currency: str, monthly_income: float,
+                         allocations: dict[str, float]) -> str:
+    """Propose a monthly envelope budget for the user to confirm. `allocations` maps category name to
+    a monthly amount in major units. Does not save anything."""
+    envelopes, unknown = [], []
+    for cat_name, amount in list(allocations.items())[:20]:
+        if amount <= 0:
+            continue
+        cat = await _find_category(cat_name)
+        if not cat:
+            unknown.append(cat_name)
+            continue
+        envelopes.append({"category_id": str(cat.id), "name": cat.name, "allocated_minor": round(amount * 100)})
+    if not envelopes:
+        return f"No valid categories to budget. Unknown: {', '.join(unknown) or 'none'}."
+    payload = {"name": name[:120], "strategy": "envelope", "currency": currency.upper()[:3],
+               "income_planned_minor": round(max(monthly_income, 0) * 100), "envelopes": envelopes}
+    propose("create_budget", {"name": payload["name"], "currency": payload["currency"],
+                              "income_planned_minor": payload["income_planned_minor"],
+                              "envelopes": [{"name": e["name"], "allocated_minor": e["allocated_minor"]} for e in envelopes]},
+            payload)
+    return _PROPOSED + (f" Skipped unknown categories: {', '.join(unknown)}." if unknown else "")
+
+
+@tool
+async def propose_recategorize(merchant_query: str, category_name: str, days: int = 90) -> str:
+    """Propose moving recent transactions whose merchant matches `merchant_query` into `category_name`
+    for the user to confirm. Does not save anything."""
     db = await get_db_session()
-    target_date = date.fromisoformat(target_date_iso) if target_date_iso else None
-    goal = Goal(user_id=uid(), name=name, target_minor=round(target_amount * 100),
-                currency=currency.upper(), monthly_amount_minor=round(monthly_amount * 100),
-                target_date=target_date, strategy="fixed_monthly")
-    db.add(goal)
-    await db.flush()
-    return f"Goal '{name}' created: {target_amount:.2f} {currency}, {monthly_amount:.2f}/month."
+    cat = await _find_category(category_name)
+    if not cat:
+        return f"No category named '{category_name}'."
+    since = date.today() - timedelta(days=min(max(days, 1), 365))
+    rows = (await db.execute(select(Transaction).where(
+        Transaction.user_id == uid(), Transaction.date >= since,
+        Transaction.merchant_norm.ilike(f"%{merchant_query.lower()}%"),
+    ).order_by(Transaction.date.desc()).limit(25))).scalars().all()
+    rows = [t for t in rows if t.category_id != cat.id]
+    if not rows:
+        return "No matching transactions need recategorizing."
+    propose("recategorize",
+            {"merchant": merchant_query[:60], "category": cat.name, "count": len(rows),
+             "total_minor": sum(abs(t.amount_minor) for t in rows), "currency": rows[0].currency},
+            {"transaction_ids": [str(t.id) for t in rows], "category_id": str(cat.id)})
+    return _PROPOSED
 
 
-WRITE_TOOLS = [create_goal_draft]
+PROPOSAL_TOOLS = [propose_goal, propose_budget, propose_recategorize]
 
-AGENT_TOOLS = ALL_TOOLS + WRITE_TOOLS
+AGENT_TOOLS = ALL_TOOLS + PROPOSAL_TOOLS

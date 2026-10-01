@@ -1,179 +1,312 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Send, Mic, Volume2, Bot, User } from "lucide-react";
-import { motion } from "framer-motion";
-import { http } from "@/lib/api";
-import { Button } from "@/components/ui";
-import { useSpeechRecognition, speak } from "@/lib/hooks";
+import { ArrowLeft, ArrowUpRight, MessageSquare, Pencil, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
+import { Badge, Button, Card, EmptyState, IconButton, Input, Modal, Notice, PageHeader, Select } from "@/components/ui";
+import ActionCard from "@/components/coach/ActionCard";
+import ChatThreadView from "@/components/coach/ChatThreadView";
+import { tabLabelKey, tabPath } from "@/lib/coachTabs";
 import { cn } from "@/lib/utils";
+import { useCoach, type CoachThread } from "@/stores/coach";
 
-interface Msg {
-  role: "user" | "assistant";
-  content: string;
-  provider?: string | null;
+const TAB = "coach";
+const SOURCE_TABS = ["dashboard", "transactions", "budgets", "goals", "debts", "tax", "family", "connections", "settings", "ai-eval", "coach"];
+const RANGES = { all: 0, today: 1, week: 7, month: 30 } as const;
+type Range = keyof typeof RANGES;
+type Dialog = { kind: "rename" | "delete"; thread: CoachThread } | null;
+
+function rangeStart(range: Range) {
+  if (range === "all") return 0;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (RANGES[range] - 1));
+  return d.getTime();
 }
+
+/** Link back to the tab a thread came from; the dock there reopens on the same thread. */
+const jumpBackHref = (thread: CoachThread) =>
+  `${thread.context?.path || tabPath(thread.sourceTab ?? "dashboard")}?coach=${thread.id}`;
 
 export default function CoachPage() {
   const { t, i18n } = useTranslation();
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
-  const [threadId, setThreadId] = useState<string | null>(null);
-  const [mode, setMode] = useState("auto");
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const speech = useSpeechRecognition(i18n.language);
+  const [params, setParams] = useSearchParams();
+  const threadParam = params.get("thread");
+  const threadKey = useCoach((s) => s.activeByTab[TAB] ?? null);
+  const threadsById = useCoach((s) => s.threads);
+  const pending = useCoach((s) => s.pending);
+  const { setActive, loadMessages, loadThreads, loadPending, renameThread, pinThread, deleteThread } = useCoach.getState();
+
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState<Set<string> | null>(null);
+  const [source, setSource] = useState("");
+  const [range, setRange] = useState<Range>("all");
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const active = threadKey ? threadsById[threadKey] : undefined;
 
   useEffect(() => {
-    if (speech.transcript) setInput(speech.transcript);
-  }, [speech.transcript]);
+    loadThreads().catch(() => undefined);
+    loadPending().catch(() => undefined);
+  }, [loadThreads, loadPending]);
 
+  // Resume a thread chosen in the list or opened from a tab dock ("Open in AI Coach").
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!threadParam) return;
+    setActive(TAB, threadParam);
+    loadMessages(threadParam).catch(() => {
+      /* unknown or deleted thread: the empty state is shown */
+    });
+  }, [threadParam, setActive, loadMessages]);
 
-  const send = useMutation({
-    mutationFn: async (text: string) => {
-      const { data } = await http.post("/chat/send", {
-        thread_id: threadId,
-        message: text,
-        agent_mode: mode,
-      });
-      return data;
-    },
-    onSuccess: (data) => {
-      setThreadId(data.thread_id);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: data.reply.content, provider: data.reply.provider },
-      ]);
-    },
-    onError: () => {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: "⚠️ The AI engine is unavailable right now. Configure an LLM provider key (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY / OLLAMA_BASE_URL) and try again." },
-      ]);
-    },
-  });
+  // Text search runs on the server (it also matches message content); debounce keystrokes.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setMatches(null);
+      return;
+    }
+    const id = setTimeout(() => {
+      loadThreads({ q })
+        .then((list) => setMatches(new Set(list.map((x) => x.id))))
+        .catch(() => setMatches(new Set()));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [query, loadThreads]);
 
-  function submit() {
-    const text = input.trim();
-    if (!text || send.isPending) return;
-    setMessages((m) => [...m, { role: "user", content: text }]);
-    setInput("");
-    speech.reset();
-    send.mutate(text);
+  // Tab and date filters run on the shared store, so threads started in any dock show up instantly.
+  const threads = useMemo(() => {
+    const since = rangeStart(range);
+    return Object.values(threadsById)
+      .filter((x) => !matches || matches.has(x.id))
+      .filter((x) => !source || x.sourceTab === source)
+      .filter((x) => !since || new Date(x.updatedAt ?? x.createdAt ?? 0).getTime() >= since)
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+  }, [threadsById, matches, source, range]);
+
+  const open = (id: string | null) => {
+    if (id) {
+      setParams({ thread: id });
+      return;
+    }
+    setParams({});
+    setActive(TAB, null);
+  };
+
+  async function submitDialog() {
+    if (!dialog) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      if (dialog.kind === "rename") await renameThread(dialog.thread.id, title.trim());
+      else {
+        await deleteThread(dialog.thread.id);
+        if (threadKey === dialog.thread.id) open(null);
+      }
+      setDialog(null);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  return (
-    <div className="flex h-[calc(100vh-8.5rem)] flex-col">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">{t("coach.title")}</h1>
-        <div className="flex gap-1 rounded-xl bg-raised p-1">
-          {["auto", "coach", "budget", "fraud", "goals"].map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={cn(
-                "rounded-lg px-3 py-1.5 text-xs font-medium capitalize transition",
-                mode === m ? "bg-brand text-white shadow" : "text-muted hover:text-ink",
-              )}
-            >
-              {t(`coach.modes.${m}`)}
-            </button>
-          ))}
-        </div>
-      </div>
+  const fmtDate = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString(i18n.language, { month: "short", day: "numeric" }) : "";
+  const tabName = (tab: string | null) => t(tabLabelKey(tab));
 
-      <div className="card flex-1 overflow-y-auto p-4">
-        {messages.length === 0 && (
-          <div className="grid h-full place-items-center text-center">
-            <div className="max-w-sm space-y-3">
-              <Bot size={40} className="mx-auto text-brand" />
-              <p className="font-medium">Your money, explained.</p>
-              <div className="flex flex-wrap justify-center gap-2 text-xs">
-                {[
-                  "How is my cash flow trending?",
-                  "Any suspicious charges lately?",
-                  "Where am I overspending?",
-                  "Plan my debt payoff",
-                  "How close am I to my goals?",
-                ].map((s) => (
-                  <button key={s} onClick={() => setInput(s)} className="rounded-full border border-line px-3 py-1.5 text-muted transition hover:border-brand/50 hover:text-brand">
-                    {s}
+  return (
+    <div className="flex h-[calc(100dvh-8rem)] min-h-[28rem] flex-col gap-4">
+      <PageHeader
+        title={t("coach.title")}
+        actions={
+          <Button variant="secondary" onClick={() => open(null)}>
+            <Plus size={16} aria-hidden /> {t("coach.newChat")}
+          </Button>
+        }
+      />
+      <div className="flex min-h-0 flex-1 gap-4">
+        {/* Thread list: full width on mobile until a thread is open; fixed column from lg. */}
+        <aside
+          aria-label={t("coach.hub.conversations")}
+          className={cn("min-h-0 w-full flex-col gap-3 overflow-y-auto lg:flex lg:w-80 lg:shrink-0", threadKey ? "hidden" : "flex")}
+          data-testid="coach-hub-list"
+        >
+          {pending.length > 0 && (
+            <section aria-labelledby="pending-heading" className="space-y-2" data-testid="coach-hub-pending">
+              <h2 id="pending-heading" className="text-sm font-semibold text-ink">
+                {t("coach.hub.pending", { count: pending.length })}
+              </h2>
+              {pending.map((a) => (
+                <div key={a.id} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => open(a.thread_id)}
+                    className="block max-w-full truncate text-xs text-muted hover:text-brand"
+                  >
+                    {t("coach.hub.fromThread", { title: a.thread_title || t("coach.title"), tab: tabName(a.source_tab) })}
                   </button>
+                  <ActionCard action={a} messageId={a.message_id} />
+                </div>
+              ))}
+            </section>
+          )}
+
+          <div className="space-y-2">
+            <label className="relative block">
+              <span className="sr-only">{t("coach.hub.search")}</span>
+              <Search size={16} className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden />
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("coach.hub.search")}
+                className="ps-9"
+                data-testid="coach-hub-search"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={source} onChange={(e) => setSource(e.target.value)} aria-label={t("coach.hub.filterTab")}>
+                <option value="">{t("coach.hub.allTabs")}</option>
+                {SOURCE_TABS.map((tab) => (
+                  <option key={tab} value={tab}>{tabName(tab)}</option>
                 ))}
-              </div>
+              </Select>
+              <Select value={range} onChange={(e) => setRange(e.target.value as Range)} aria-label={t("coach.hub.filterDate")}>
+                {(Object.keys(RANGES) as Range[]).map((r) => (
+                  <option key={r} value={r}>{t(`coach.hub.range.${r}`)}</option>
+                ))}
+              </Select>
             </div>
           </div>
-        )}
-        <div className="space-y-4">
-          {messages.map((m, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn("flex gap-3", m.role === "user" && "justify-end")}
-            >
-              {m.role === "assistant" && (
-                <span className="mt-1 grid size-8 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand"><Bot size={16} /></span>
-              )}
-              <div
-                className={cn(
-                  "max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                  m.role === "user" ? "bg-brand text-white rounded-br-md" : "bg-surface border border-line rounded-tl-md",
-                )}
-              >
-                {m.content}
-                {m.role === "assistant" && (
-                  <div className="mt-2 flex items-center gap-2 text-[10px] text-muted">
-                    {m.provider && <span>via {m.provider}</span>}
-                    <button onClick={() => speak(m.content, i18n.language)} className="inline-flex items-center gap-1 hover:text-brand">
-                      <Volume2 size={11} /> listen
+
+          {threads.length === 0 ? (
+            <EmptyState icon={<MessageSquare size={20} />} title={t("coach.hub.emptyTitle")} body={t("coach.hub.emptyBody")} />
+          ) : (
+            <ul className="space-y-1.5">
+              {threads.map((x) => (
+                <li
+                  key={x.id}
+                  data-testid="coach-hub-thread"
+                  className={cn(
+                    "rounded-lg border bg-raised p-2.5 transition-colors",
+                    x.id === threadKey ? "border-brand bg-brand/5" : "border-line hover:border-brand/40",
+                  )}
+                >
+                  <div className="flex items-start gap-1">
+                    <button
+                      type="button"
+                      onClick={() => open(x.id)}
+                      aria-current={x.id === threadKey || undefined}
+                      className="min-w-0 flex-1 rounded text-start"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {x.pinned && <Pin size={12} className="shrink-0 text-brand" aria-label={t("coach.hub.pinned")} />}
+                        <span className="truncate text-sm font-medium text-ink">{x.title || t("coach.title")}</span>
+                      </span>
+                      {x.preview && <span className="mt-0.5 line-clamp-2 block text-xs text-muted">{x.preview}</span>}
                     </button>
+                    <IconButton
+                      label={x.pinned ? t("coach.hub.unpin") : t("coach.hub.pin")}
+                      icon={x.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                      onClick={() => void pinThread(x.id, !x.pinned)}
+                      className="size-8 min-h-8"
+                    />
+                    <IconButton
+                      label={t("coach.hub.rename")}
+                      icon={<Pencil size={15} />}
+                      onClick={() => {
+                        setTitle(x.title);
+                        setDialog({ kind: "rename", thread: x });
+                      }}
+                      className="size-8 min-h-8"
+                    />
+                    <IconButton
+                      label={t("common.delete")}
+                      icon={<Trash2 size={15} />}
+                      onClick={() => setDialog({ kind: "delete", thread: x })}
+                      className="size-8 min-h-8"
+                    />
                   </div>
-                )}
-              </div>
-              {m.role === "user" && (
-                <span className="mt-1 grid size-8 shrink-0 place-items-center rounded-xl bg-muted/10 text-muted"><User size={15} /></span>
-              )}
-            </motion.div>
-          ))}
-          {send.isPending && (
-            <div className="flex gap-3">
-              <span className="grid size-8 place-items-center rounded-xl bg-brand/10 text-brand"><Bot size={16} /></span>
-              <div className="rounded-2xl rounded-tl-md border border-line bg-surface px-4 py-3">
-                <span className="flex gap-1">
-                  {[0, 1, 2].map((i) => (
-                    <span key={i} className="size-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: `${i * 120}ms` }} />
-                  ))}
-                </span>
-              </div>
-            </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                    <Link
+                      to={jumpBackHref(x)}
+                      className="inline-flex items-center gap-0.5 text-brand hover:underline"
+                      aria-label={t("coach.hub.jumpBack", { tab: tabName(x.sourceTab) })}
+                    >
+                      {tabName(x.sourceTab)} <ArrowUpRight size={12} className="rtl:-scale-x-100" aria-hidden />
+                    </Link>
+                    <span className="num">{fmtDate(x.updatedAt ?? x.createdAt)}</span>
+                    {x.pendingActions > 0 && <Badge tone="warn">{t("coach.hub.pendingBadge", { count: x.pendingActions })}</Badge>}
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
-          <div ref={bottomRef} />
-        </div>
+        </aside>
+
+        <Card className={cn("min-h-0 flex-1 flex-col overflow-hidden p-0 lg:flex", threadKey ? "flex" : "hidden")}>
+          <header className="flex items-center gap-2 border-b border-line py-2 pe-2 ps-2 lg:ps-4">
+            <IconButton
+              label={t("coach.hub.back")}
+              icon={<ArrowLeft size={18} className="rtl:-scale-x-100" />}
+              onClick={() => open(null)}
+              className="lg:hidden"
+            />
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-sm font-semibold text-ink">{active?.title || t("coach.newChat")}</h2>
+              {active?.sourceTab && (
+                <p className="truncate text-xs text-muted">{t("coach.hub.startedOn", { tab: tabName(active.sourceTab) })}</p>
+              )}
+            </div>
+            {active && active.sourceTab !== TAB && (
+              <Link to={jumpBackHref(active)} className="btn-ghost min-h-9 shrink-0 px-3 py-1.5 text-sm" data-testid="coach-hub-jump">
+                <span className="hidden sm:inline">{t("coach.hub.jumpBack", { tab: tabName(active.sourceTab) })}</span>
+                <span className="sm:hidden">{tabName(active.sourceTab)}</span>
+                <ArrowUpRight size={14} className="rtl:-scale-x-100" aria-hidden />
+              </Link>
+            )}
+          </header>
+          <ChatThreadView threadKey={threadKey} tab={active?.sourceTab ?? TAB} path={active?.context?.path ?? "/coach"} className="flex-1" />
+        </Card>
       </div>
 
-      <form
-        onSubmit={(e) => { e.preventDefault(); submit(); }}
-        className="mt-3 flex items-center gap-2"
+      <Modal
+        open={dialog !== null}
+        onClose={() => {
+          setDialog(null);
+          setFailed(false);
+        }}
+        title={dialog?.kind === "delete" ? t("coach.hub.deleteTitle") : t("coach.hub.rename")}
       >
-        {speech.supported && (
-          <Button type="button" variant={speech.listening ? "danger" : "outline"} onClick={speech.listening ? speech.stop : speech.start}
-            title={t("coach.voice")} className="size-11 rounded-full p-0">
-            <Mic size={17} className={speech.listening ? "animate-pulse" : ""} />
-          </Button>
-        )}
-        <input
-          className="input flex-1"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={t("coach.placeholder")}
-        />
-        <Button type="submit" disabled={!input.trim() || send.isPending} className="size-11 rounded-full p-0">
-          <Send size={17} />
-        </Button>
-      </form>
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitDialog();
+          }}
+        >
+          {dialog?.kind === "rename" ? (
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={300} aria-label={t("coach.hub.rename")} autoFocus />
+          ) : (
+            <p className="text-sm text-ink">{t("coach.hub.deleteBody", { title: dialog?.thread.title })}</p>
+          )}
+          {failed && <Notice tone="neg">{t("common.errorBody")}</Notice>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setDialog(null)}>{t("common.cancel")}</Button>
+            <Button
+              type="submit"
+              variant={dialog?.kind === "delete" ? "danger" : "primary"}
+              disabled={busy || (dialog?.kind === "rename" && !title.trim())}
+              data-testid="coach-hub-dialog-submit"
+            >
+              {dialog?.kind === "delete" ? t("common.delete") : t("common.save")}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

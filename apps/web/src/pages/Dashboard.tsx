@@ -2,17 +2,23 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid,
 } from "recharts";
-import { TrendingUp, TrendingDown, Wallet, Sparkles, Mic } from "lucide-react";
+import { TrendingUp, TrendingDown, Wallet, Sparkles, Mic, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { http } from "@/lib/api";
-import { Card, SectionTitle, Button, Input, Badge, Modal, Spinner, Select } from "@/components/ui";
+import {
+  Card, SectionTitle, Button, Input, Badge, Modal, Select, PageHeader, StatTile, PageSkeleton,
+  ErrorState, ChartFrame, Field, IconButton,
+} from "@/components/ui";
 import { fmtMoney, todayISO } from "@/lib/utils";
 import { useSpeechRecognition } from "@/lib/hooks";
+import { useChartColors } from "@/lib/theme";
+import { useCoachContext } from "@/lib/coachTabs";
 
 export default function DashboardPage() {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
+  const colors = useChartColors();
   const [quickOpen, setQuickOpen] = useState(false);
 
   const accounts = useQuery({
@@ -65,75 +71,111 @@ export default function DashboardPage() {
     return { income30, spend30, netWorth, topCats, series, savingsRate: income30 ? ((income30 - spend30) / income30) * 100 : 0 };
   }, [txns.data, accounts.data, t]);
 
-  if (txns.isLoading || accounts.isLoading) return <Spinner label={t("common.loading")} />;
+  useCoachContext(stats ? {
+    currency,
+    net_worth: stats.netWorth / 100,
+    spent_last_30d: stats.spend30 / 100,
+    income_last_30d: stats.income30 / 100,
+    savings_rate_pct: +stats.savingsRate.toFixed(1),
+    top_categories: stats.topCats.map((c) => ({ name: c.name, spent: c.value / 100 })),
+    open_alerts: (alerts.data ?? []).length,
+  } : null);
+
+  if (txns.isLoading || accounts.isLoading) return <PageSkeleton />;
+  if (txns.isError || accounts.isError) {
+    return <ErrorState onRetry={() => { void txns.refetch(); void accounts.refetch(); }} />;
+  }
+
+  const money = (minor: number) => fmtMoney(minor, currency, locale);
+  const alertList = (alerts.data ?? []) as { id: string; title: string; body?: string | null; severity?: string }[];
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{t("nav.dashboard")}</h1>
-        <Button onClick={() => setQuickOpen(true)}>
-          <Sparkles size={16} /> {t("dash.quickAdd")}
-        </Button>
+      <PageHeader
+        title={t("nav.dashboard")}
+        actions={
+          <Button onClick={() => setQuickOpen(true)}>
+            <Sparkles size={16} aria-hidden /> {t("dash.quickAdd")}
+          </Button>
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <StatTile label={t("dash.netWorth")} value={<span className="num">{money(stats?.netWorth ?? 0)}</span>} icon={<Wallet size={18} />} />
+        <StatTile label={t("dash.thisMonth")} value={<span className="num">{money(-(stats?.spend30 ?? 0))}</span>} tone="neg" icon={<TrendingDown size={18} />} />
+        <StatTile label={t("dash.income")} value={<span className="num">{money(stats?.income30 ?? 0)}</span>} tone="pos" icon={<TrendingUp size={18} />} />
+        <StatTile label={t("dash.savingsRate")} value={<span className="num">{`${(stats?.savingsRate ?? 0).toFixed(1)}%`}</span>} icon={<Sparkles size={18} />} />
       </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Kpi label={t("dash.netWorth")} value={fmtMoney(stats?.netWorth ?? 0, currency, locale)} icon={<Wallet size={18} />} />
-        <Kpi label={t("dash.thisMonth")} value={fmtMoney(-(stats?.spend30 ?? 0), currency, locale)} tone="neg" icon={<TrendingDown size={18} />} />
-        <Kpi label={t("dash.income")} value={fmtMoney(stats?.income30 ?? 0, currency, locale)} tone="pos" icon={<TrendingUp size={18} />} />
-        <Kpi label={t("dash.savingsRate")} value={`${(stats?.savingsRate ?? 0).toFixed(1)}%`} icon={<Sparkles size={18} />} />
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
+        <Card as="section" className="lg:col-span-2">
           <SectionTitle right={<Badge tone="brand">{t("dash.forecast")}</Badge>}>{t("dash.cashflow")}</SectionTitle>
-          <div className="h-64">
+          <ChartFrame summary={t("dash.cashflowSummary", { count: stats?.series.length ?? 0 })}>
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats?.series ?? []}>
+              <AreaChart data={stats?.series ?? []} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="net" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                    <stop offset="0%" stopColor={colors.brand} stopOpacity={0.22} />
+                    <stop offset="100%" stopColor={colors.brand} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="month" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={44} />
-                <Tooltip formatter={(v: number) => fmtMoney(v * 100, currency, locale)} />
-                <Area type="monotone" dataKey="net" stroke="#6366f1" strokeWidth={2.5} fill="url(#net)" />
+                <CartesianGrid vertical={false} stroke={colors.grid} />
+                <XAxis dataKey="month" tick={{ fontSize: 12, fill: colors.muted }} axisLine={false} tickLine={false} reversed={i18n.dir() === "rtl"} />
+                <YAxis tick={{ fontSize: 12, fill: colors.muted }} axisLine={false} tickLine={false} width={48} orientation={i18n.dir() === "rtl" ? "right" : "left"} />
+                <Tooltip
+                  formatter={(v: number) => money(v * 100)}
+                  contentStyle={{ background: colors.raised, border: `1px solid ${colors.grid}`, borderRadius: 8, color: colors.ink }}
+                  labelStyle={{ color: colors.muted }}
+                  cursor={{ stroke: colors.muted, strokeDasharray: "3 3" }}
+                />
+                <Area type="monotone" dataKey="net" name={t("dash.net")} stroke={colors.brand} strokeWidth={2} fill="url(#net)" activeDot={{ r: 4 }} />
               </AreaChart>
             </ResponsiveContainer>
-          </div>
+          </ChartFrame>
         </Card>
 
-        <Card>
+        <Card as="section">
           <SectionTitle>{t("dash.topCategories")}</SectionTitle>
-          <div className="flex items-center gap-2">
-            <PieChart width={130} height={130}>
-              <Pie data={stats?.topCats ?? []} dataKey="value" innerRadius={38} outerRadius={62} paddingAngle={3}>
-                {(stats?.topCats ?? []).map((_: any, i: number) => (
-                  <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
+          {(stats?.topCats ?? []).length === 0 ? (
+            <p className="text-sm text-muted">{t("dash.noSpending")}</p>
+          ) : (
+            <div className="flex items-center gap-4">
+              <div className="shrink-0" aria-hidden>
+                <PieChart width={112} height={112}>
+                  <Pie data={stats?.topCats ?? []} dataKey="value" innerRadius={34} outerRadius={54} stroke={colors.raised} strokeWidth={2} isAnimationActive={false}>
+                    {(stats?.topCats ?? []).map((c, i) => (
+                      <Cell key={c.name} fill={colors.series[i % colors.series.length]} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </div>
+              <ul className="min-w-0 flex-1 space-y-1.5 text-sm" aria-label={t("dash.topCategories")}>
+                {(stats?.topCats ?? []).map((c, i) => (
+                  <li key={c.name} className="flex items-center gap-2">
+                    <span className="size-2.5 shrink-0 rounded-sm" style={{ background: colors.series[i % colors.series.length] }} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate text-ink">{c.name}</span>
+                    <span className="num text-muted">{money(c.value)}</span>
+                  </li>
                 ))}
-              </Pie>
-            </PieChart>
-            <ul className="space-y-1 text-xs text-muted">
-              {(stats?.topCats ?? []).map((c: any, i: number) => (
-                <li key={c.name} className="flex items-center gap-1.5 truncate">
-                  <span className="size-2 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />
-                  {c.name}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <SectionTitle>{t("dash.alerts")}</SectionTitle>
+              </ul>
+            </div>
+          )}
+
+          <h2 className="mb-3 mt-6 text-base font-semibold text-ink">{t("dash.alerts")}</h2>
           <ul className="space-y-2">
-            {(alerts.data ?? []).slice(0, 4).map((a: any) => (
-              <li key={a.id} className="rounded-xl border border-line px-3 py-2 text-xs">
-                <span className="font-medium">{a.title}</span>
-                {a.body && <p className="mt-0.5 line-clamp-1 text-muted">{a.body}</p>}
+            {alertList.slice(0, 4).map((a) => (
+              <li key={a.id} className="flex gap-2.5 rounded-lg bg-sunken px-3 py-2.5 text-sm">
+                <AlertTriangle size={16} className={a.severity === "critical" ? "mt-0.5 shrink-0 text-neg" : "mt-0.5 shrink-0 text-warn"} aria-hidden />
+                <div className="min-w-0">
+                  <p className="font-medium text-ink">{a.title}</p>
+                  {a.body && <p className="mt-0.5 line-clamp-1 text-muted">{a.body}</p>}
+                </div>
               </li>
             ))}
-            {(alerts.data ?? []).length === 0 && (
-              <li className="rounded-xl bg-pos/10 px-3 py-2 text-xs text-pos">✓ All clear</li>
+            {alertList.length === 0 && (
+              <li className="flex items-center gap-2 rounded-lg bg-pos/10 px-3 py-2.5 text-sm text-pos">
+                <CheckCircle2 size={16} aria-hidden /> {t("dash.allClear")}
+              </li>
             )}
           </ul>
         </Card>
@@ -141,22 +183,6 @@ export default function DashboardPage() {
 
       <QuickAddModal open={quickOpen} onClose={() => setQuickOpen(false)} onDone={() => { void qc.invalidateQueries(); }} />
     </div>
-  );
-}
-
-const PALETTE = ["#6366f1", "#22c55e", "#f97316", "#0ea5e9", "#a855f7", "#ef4444"];
-
-function Kpi({ label, value, tone, icon }: { label: string; value: string; tone?: "pos" | "neg"; icon?: React.ReactNode }) {
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between text-muted">
-        <p className="text-xs font-medium uppercase tracking-wide">{label}</p>
-        {icon}
-      </div>
-      <p className={`mt-2 text-xl font-bold tabular-nums ${tone === "neg" ? "text-neg" : tone === "pos" ? "text-pos" : ""}`}>
-        {value}
-      </p>
-    </Card>
   );
 }
 
@@ -209,36 +235,57 @@ export function QuickAddModal({ open, onClose, onDone }: { open: boolean; onClos
 
   return (
     <Modal open={open} onClose={onClose} title={t("dash.quickAdd")}>
-      <div className="space-y-3">
-        <div className="flex gap-2">
-          <Input
-            value={speech.transcript || text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={t("dash.quickAddHint")}
-          />
-          {speech.supported && (
-            <Button variant={speech.listening ? "danger" : "outline"} onClick={speech.listening ? speech.stop : speech.start}>
-              <Mic size={16} />
-            </Button>
-          )}
-        </div>
-        <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-          <option value="">— account —</option>
-          {(accounts.data ?? []).filter((a: Account) => !a.archived).map((a: Account) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </Select>
+      <div className="space-y-4">
+        <Field label={t("dash.quickAddLabel")} hint={t("dash.quickAddHint")}>
+          <div className="flex gap-2">
+            <Input
+              value={speech.transcript || text}
+              onChange={(e) => setText(e.target.value)}
+              autoFocus
+            />
+            {speech.supported && (
+              <IconButton
+                variant={speech.listening ? "danger" : "secondary"}
+                label={t("coach.voice")}
+                icon={<Mic size={16} />}
+                onClick={speech.listening ? speech.stop : speech.start}
+                aria-pressed={speech.listening}
+              />
+            )}
+          </div>
+        </Field>
+        <Field label={t("common.account")}>
+          <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            <option value="">{t("dash.chooseAccount")}</option>
+            {(accounts.data ?? []).filter((a: Account) => !a.archived).map((a: Account) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </Select>
+        </Field>
         {parsed && (
-          <div className="rounded-xl border border-line p-3 text-sm">
-            <p><b>{fmtMoney(parsed.amount_minor ?? 0, parsed.currency)}</b> · {parsed.merchant}</p>
+          <div className="rounded-lg bg-sunken p-3 text-sm">
+            <p className="text-ink">
+              <b className="num">{fmtMoney(parsed.amount_minor ?? 0, parsed.currency, i18n.language)}</b>
+              <span className="text-muted"> {t("dash.at")} </span>
+              {parsed.merchant}
+            </p>
             {parsed.items?.length > 1 && (
-              <ul className="mt-1 text-xs text-muted">{parsed.items.map((it: any, i: number) => <li key={i}>• {it.label}: {fmtMoney(it.amount_minor, parsed.currency)}</li>)}</ul>
+              <ul className="mt-1.5 space-y-0.5 text-muted">
+                {parsed.items.map((it: any, i: number) => (
+                  <li key={i} className="flex justify-between gap-3">
+                    <span>{it.label}</span>
+                    <span className="num">{fmtMoney(it.amount_minor, parsed.currency, i18n.language)}</span>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 pt-1">
           {!parsed ? (
-            <Button onClick={parse} disabled={busy || !(speech.transcript || text).trim()}>{busy ? "…" : "Parse"}</Button>
+            <Button onClick={parse} disabled={busy || !(speech.transcript || text).trim()}>
+              {busy ? t("common.loading") : t("dash.parse")}
+            </Button>
           ) : (
             <>
               <Button variant="ghost" onClick={() => { setParsed(null); speech.reset(); }}>{t("common.cancel")}</Button>

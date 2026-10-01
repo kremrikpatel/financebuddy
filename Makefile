@@ -1,4 +1,4 @@
-.PHONY: infra api worker web seed migrate test lint dev
+.PHONY: infra api worker web seed migrate test lint dev demo demo-down prod prod-down
 
 infra:
 	docker compose up -d postgres redis
@@ -25,3 +25,17 @@ lint:
 	cd server && ruff check app tests
 
 dev: infra
+
+# Demo stack: own DB/Redis, seeded demo@financebuddy.app / DemoPass123!
+demo:
+	./start-demo.sh
+
+demo-down:
+	./start-demo.sh --down
+
+# Production stack: own DB/Redis, generated secrets, reference data only (no demo user)
+prod:
+	./start-prod.sh
+
+prod-down:
+	./start-prod.sh --down

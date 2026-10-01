@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.config import settings
@@ -23,6 +23,10 @@ class ChatThread(UUIDMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(300), default="New conversation")
     agent_mode: Mapped[str] = mapped_column(String(40), default="auto")  # auto|coach|fraud|budget|goals
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # AI Coach hub metadata: tab the thread started on, its page-context snapshot, and pin state.
+    source_tab: Mapped[str | None] = mapped_column(String(40))
+    context: Mapped[dict | None] = mapped_column(JSON)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class ChatMessage(UUIDMixin, Base):
