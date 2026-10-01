@@ -10,6 +10,7 @@ import random
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import SessionFactory, engine
 from app.models import (
@@ -150,7 +151,21 @@ KNOWLEDGE = [
 ]
 
 
-async def _seed_with_session(db: AsyncSession) -> None:
+async def _seed_knowledge(db: AsyncSession) -> None:
+    """Shared (user_id=None) RAG corpus; safe for every environment."""
+    for title, content in KNOWLEDGE:
+        existing_doc = await db.scalar(
+            select(KnowledgeDoc).where(KnowledgeDoc.title == title, KnowledgeDoc.user_id.is_(None))
+        )
+        if not existing_doc:
+            from app.ai.rag import ingest_document
+
+            await ingest_document(db, title, content, user_id=None, source_type="guide")
+    await db.commit()
+
+
+async def _seed_with_session(db: AsyncSession, demo: bool = True) -> None:
+    """Reference data always; the demo user and their sample finances only when `demo` is set."""
     # 1. System Categories
     cats: dict[str, Category] = {}
     for item in SYSTEM_CATEGORIES:
@@ -174,6 +189,13 @@ async def _seed_with_session(db: AsyncSession) -> None:
         if not existing_fx:
             db.add(FxRate(base=base, quote=quote, rate=rate))
     await db.commit()
+
+    if not demo:
+        await _seed_knowledge(db)
+        print("Reference data seeded (categories, FX rates, knowledge corpus). No demo user created.")
+        return
+    if settings.is_prod:
+        raise SystemExit("Refusing to create the demo user in production. Use `python -m app.seed --reference-only`.")
 
     # 3. Demo User
     demo = await db.scalar(select(User).where(User.email == "demo@financebuddy.app"))
@@ -525,28 +547,21 @@ async def _seed_with_session(db: AsyncSession) -> None:
         await db.commit()
 
     # 11. Knowledge Corpus for RAG
-    for title, content in KNOWLEDGE:
-        existing_doc = await db.scalar(
-            select(KnowledgeDoc).where(KnowledgeDoc.title == title, KnowledgeDoc.user_id.is_(None))
-        )
-        if not existing_doc:
-            from app.ai.rag import ingest_document
-
-            await ingest_document(db, title, content, user_id=None, source_type="guide")
-
-    await db.commit()
+    await _seed_knowledge(db)
     print("Seed complete. Login: demo@financebuddy.app / DemoPass123!")
 
 
-async def seed(session: AsyncSession | None = None) -> None:
+async def seed(session: AsyncSession | None = None, demo: bool = True) -> None:
     if session is not None:
-        await _seed_with_session(session)
+        await _seed_with_session(session, demo)
     else:
         async with engine.begin() as conn:
             pass
         async with SessionFactory() as db:
-            await _seed_with_session(db)
+            await _seed_with_session(db, demo)
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    import sys
+
+    asyncio.run(seed(demo="--reference-only" not in sys.argv))

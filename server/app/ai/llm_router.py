@@ -9,12 +9,13 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from app.ai.pii import mask_pii
 from app.core.config import settings
@@ -250,6 +251,47 @@ class FallbackChatModel(BaseChatModel):
 
         mock_model = OfflineMockChatModel(tools_schema=self.tools_schema)
         return await mock_model._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Token streaming with the same failover order. LangChain only takes this path when a
+        streaming consumer (astream_events) is attached; plain ainvoke still uses _agenerate."""
+        for name, factory in _provider_specs():
+            br = _breaker(name)
+            if br.is_open():
+                continue
+            started = False
+            try:
+                model = factory()
+                if self.tools_schema and hasattr(model, "bind_tools"):
+                    model = model.bind_tools(self.tools_schema)
+                async for chunk in model.astream(messages, stop=stop):
+                    started = True
+                    gen = ChatGenerationChunk(message=chunk)
+                    if run_manager and isinstance(chunk.content, str) and chunk.content:
+                        await run_manager.on_llm_new_token(chunk.content, chunk=gen)
+                    yield gen
+                br.record_success()
+                return
+            except Exception as exc:  # noqa: BLE001 — failover before the first token only
+                br.record_failure()
+                if started:
+                    raise
+                log.warning("provider_stream_failed_falling_over", provider=name, error=str(exc)[:200])
+
+        # Offline/degraded mode: stream the deterministic mock reply word by word.
+        result = await OfflineMockChatModel(tools_schema=self.tools_schema)._agenerate(messages, stop=stop)
+        text = result.generations[0].message.content
+        for piece in re.findall(r"\S+\s*", text if isinstance(text, str) else str(text)):
+            gen = ChatGenerationChunk(message=AIMessageChunk(content=piece))
+            if run_manager:
+                await run_manager.on_llm_new_token(piece, chunk=gen)
+            yield gen
 
     def _generate(self, *args: Any, **kwargs: Any) -> ChatResult:
         import asyncio

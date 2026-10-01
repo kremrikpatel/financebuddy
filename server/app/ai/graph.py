@@ -27,8 +27,10 @@ from app.ai import rag
 from app.ai.llm_router import complete_json, get_chat_model
 from app.ai.pii import mask_pii
 from app.ai.tools import (
-    AGENT_TOOLS,
     budget_status,
+    propose_budget,
+    propose_goal,
+    propose_recategorize,
     debt_overview,
     deduction_overview,
     forecast_cashflow,
@@ -52,6 +54,8 @@ SYSTEM_BASE = (
     "2. Use tools for any user-specific numbers — never invent figures.\n"
     "3. Be concise, concrete, and actionable. Use short bullet lists.\n"
     "4. Currency amounts come from tools; keep the user's currency.\n"
+    "5. You cannot change the user's data. To suggest a change use a propose_* tool, then tell the "
+    "user to review and confirm the card. Never say a change has been made.\n"
 )
 
 COACH_PROMPT = SYSTEM_BASE + (
@@ -76,8 +80,22 @@ class AgentState(TypedDict):
     thread_id: str
     agent_mode: str
     page_context: str | None
+    page_summary: dict | None
     route: str
     rag_context: str
+
+
+MAX_PAGE_SUMMARY_CHARS = 2000
+
+
+def page_summary_prompt(summary: dict | None) -> str:
+    """Compact, PII-masked rendering of what the user is looking at, for the system prompt."""
+    if not summary:
+        return ""
+    import json
+
+    text = mask_pii(json.dumps(summary, ensure_ascii=False, default=str))[:MAX_PAGE_SUMMARY_CHARS]
+    return f"\n\nWhat the user is looking at in the app right now (JSON):\n{text}"
 
 
 # ── Nodes ───────────────────────────────────────────────────────────────
@@ -164,14 +182,15 @@ async def supervisor_node(state: AgentState) -> dict:
 def _make_specialist(name: str, prompt: str, tools: list, model=None):
     async def _node(state: AgentState, config: RunnableConfig) -> dict:
         llm = model or get_chat_model()
-        system_content = prompt
+        system_content = prompt + page_summary_prompt(state.get("page_summary"))
         if state.get("rag_context"):
             system_content += f"\n\nReference material:\n{state['rag_context']}"
         db = state.get("_db")
         if db is not None and state.get("user_id"):
-            from app.ai.tools import set_agent_context
+            from app.ai.tools import agent_context, set_agent_context
             try:
-                set_agent_context(db, uuid.UUID(state["user_id"]))
+                # Keep the caller's collector so proposals/blocks reach the chat service.
+                set_agent_context(db, uuid.UUID(state["user_id"]), agent_context().get("collector"))
             except Exception:
                 pass
         agent = create_react_agent(llm, tools, prompt=system_content)
@@ -214,12 +233,13 @@ def build_graph(db_session=None):
                                          [list_accounts, spending_summary, forecast_cashflow,
                                           budget_status, debt_overview, subscriptions_detected]))
     g.add_node("budget", _make_specialist("budget", BUDGET_PROMPT,
-                                          [budget_status, spending_summary, search_transactions]))
+                                          [budget_status, spending_summary, search_transactions,
+                                           propose_budget, propose_recategorize]))
     g.add_node("fraud", _make_specialist("fraud", FRAUD_PROMPT,
-                                         [recent_alerts, search_transactions, subscriptions_detected]))
+                                         [recent_alerts, search_transactions, subscriptions_detected,
+                                          propose_recategorize]))
     g.add_node("goals", _make_specialist("goals", GOALS_PROMPT,
-                                         [goal_overview, list_accounts, forecast_cashflow] +
-                                         [t for t in AGENT_TOOLS if t.name.startswith("create_goal")]))
+                                         [goal_overview, list_accounts, forecast_cashflow, propose_goal]))
     g.add_node("tax", _make_specialist("tax", TAX_PROMPT,
                                        [tax_summary, deduction_overview, gst_report,
                                         search_transactions, spending_summary]))
@@ -245,23 +265,69 @@ def build_graph(db_session=None):
 _compiled = None
 
 
-async def run_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
-                   agent_mode: str = "auto", page_context: str | None = None,
-                   db_session=None) -> AIMessage:
-    graph = build_graph()
+def _initial_state(messages, user_id, thread_id, agent_mode, page_context, page_summary,
+                   db_session, collector) -> dict:
     state = {
         "messages": messages, "user_id": user_id, "thread_id": thread_id,
-        "agent_mode": agent_mode, "page_context": page_context, "rag_context": "",
+        "agent_mode": agent_mode, "page_context": page_context, "page_summary": page_summary,
+        "rag_context": "",
     }
     if db_session is not None:
         state["_db"] = db_session  # consumed by rag_node
         from app.ai.tools import set_agent_context
         try:
-            set_agent_context(db_session, uuid.UUID(user_id))
+            set_agent_context(db_session, uuid.UUID(user_id), collector)
         except Exception:
             pass
+    return state
+
+
+async def run_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
+                   agent_mode: str = "auto", page_context: str | None = None,
+                   db_session=None, page_summary: dict | None = None,
+                   collector: dict | None = None) -> AIMessage:
+    graph = build_graph()
+    state = _initial_state(messages, user_id, thread_id, agent_mode, page_context, page_summary,
+                           db_session, collector)
     result = await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
     return result["messages"][-1]
+
+
+async def stream_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
+                      agent_mode: str = "auto", page_context: str | None = None,
+                      db_session=None, page_summary: dict | None = None,
+                      collector: dict | None = None):
+    """Same graph as run_chat, but yields {"type": "delta"|"tool"|"final", ...} as it runs.
+
+    Only tokens produced inside a specialist node are forwarded (the router's JSON and RAG are not).
+    The final event carries the authoritative message; clients replace their streamed buffer with it.
+    """
+    graph = build_graph()
+    state = _initial_state(messages, user_id, thread_id, agent_mode, page_context, page_summary,
+                           db_session, collector)
+    root_run_id = None
+    final: AIMessage | None = None
+    async for ev in graph.astream_events(state, config={"configurable": {"thread_id": thread_id}},
+                                         version="v2"):
+        if root_run_id is None:
+            root_run_id = ev.get("run_id")
+        kind = ev.get("event")
+        ns = str((ev.get("metadata") or {}).get("langgraph_checkpoint_ns", "")).split(":")[0]
+        if kind == "on_chat_model_stream" and ns in ROUTES:
+            chunk = ev["data"].get("chunk")
+            text = chunk.content if chunk is not None and isinstance(chunk.content, str) else ""
+            if text:
+                yield {"type": "delta", "text": text}
+        elif kind == "on_tool_start" and ns in ROUTES:
+            yield {"type": "tool", "name": ev.get("name", "")}
+        elif kind == "on_chain_end" and ev.get("run_id") == root_run_id:
+            output = ev["data"].get("output") or {}
+            msgs = output.get("messages") if isinstance(output, dict) else None
+            if msgs:
+                final = msgs[-1]
+    if final is None:
+        raise RuntimeError("graph produced no final message")
+    yield {"type": "final", "message": final}
 
 
 def route_of(mode: str, question: str, page_context: str | None = None) -> str:

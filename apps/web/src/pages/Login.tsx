@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
 import { Wallet, KeyRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Button, Input, Card } from "@/components/ui";
+import { Button, Input, Card, Field, Notice, Segmented } from "@/components/ui";
 import { useAuth } from "@/stores/auth";
 import { http } from "@/lib/api";
+
+// Demo builds (and local dev) prefill and show the seeded demo account; production builds never do.
+const env = (import.meta as any).env ?? {};
+const DEMO_MODE = Boolean(env.DEV) || env.VITE_DEMO_MODE === "true";
+const DEMO_EMAIL = "demo@financebuddy.app";
 
 function bufToB64(buf: ArrayBuffer | null): string {
   if (!buf) return "";
@@ -28,7 +32,7 @@ export default function LoginPage() {
   const login = useAuth((s) => s.login);
   const register = useAuth((s) => s.register);
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("demo@financebuddy.app");
+  const [email, setEmail] = useState(DEMO_MODE ? DEMO_EMAIL : "");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [totp, setTotp] = useState("");
@@ -131,13 +135,13 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-surface p-4">
-      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="grid size-14 place-items-center rounded-2xl bg-brand text-white shadow-xl shadow-brand/30">
-            <Wallet size={26} />
+    <div className="grid min-h-[100dvh] place-items-center bg-surface px-4 py-10 pt-safe pb-safe">
+      <div className="w-full max-w-sm animate-fadeUp">
+        <div className="mb-8 flex flex-col items-center gap-3 text-center">
+          <div className="grid size-12 place-items-center rounded-xl bg-brand text-brand-ink" aria-hidden>
+            <Wallet size={22} />
           </div>
-          <h1 className="text-2xl font-bold">FinanceBuddy</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">FinanceBuddy</h1>
           <p className="text-sm text-muted">{t("app.tagline")}</p>
         </div>
 
@@ -145,76 +149,78 @@ export default function LoginPage() {
           {mfaStep ? (
             <form onSubmit={submitMfa} className="space-y-4">
               <h2 className="text-lg font-semibold">{t("auth.mfaPrompt")}</h2>
-              <Input
-                value={totp}
-                onChange={(e) => setTotp(e.target.value)}
-                placeholder={t("auth.mfaCode")}
-                inputMode="numeric"
-                autoFocus
-              />
-              <Button className="w-full" disabled={busy}>
+              <Field label={t("auth.mfaCode")}>
+                <Input
+                  value={totp}
+                  onChange={(e) => setTotp(e.target.value)}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                />
+              </Field>
+              {error && <Notice tone="neg">{error}</Notice>}
+              <Button type="submit" className="w-full" disabled={busy}>
                 {t("auth.signIn")}
               </Button>
             </form>
           ) : (
             <>
-              <div className="mb-5 flex rounded-xl bg-surface p-1">
-                {(["login", "register"] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setMode(m)}
-                    className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
-                      mode === m ? "bg-raised text-ink shadow" : "text-muted"
-                    }`}
-                  >
-                    {t(m === "login" ? "auth.signIn" : "auth.signUp")}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                label={t("auth.mode")}
+                value={mode}
+                onChange={setMode}
+                className="mb-5 flex w-full [&>button]:flex-1"
+                options={[
+                  { value: "login" as const, label: t("auth.signIn") },
+                  { value: "register" as const, label: t("auth.signUp") },
+                ]}
+              />
               <form onSubmit={submit} className="space-y-4">
                 {mode === "register" && (
-                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("auth.name")} />
+                  <Field label={t("auth.name")}>
+                    <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+                  </Field>
                 )}
-                <Input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder={t("auth.email")}
-                />
-                <Input
-                  type="password"
-                  required
-                  minLength={10}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={t("auth.password")}
-                />
-                {error && error !== "mfa_required" && (
-                  <p className="text-sm text-neg">{error}</p>
-                )}
-                <Button className="w-full" disabled={busy}>
-                  {busy ? "…" : t(mode === "login" ? "auth.signIn" : "auth.signUp")}
+                <Field label={t("auth.email")}>
+                  <Input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
+                    dir="ltr"
+                  />
+                </Field>
+                <Field label={t("auth.password")} hint={mode === "register" ? t("auth.passwordHint") : undefined}>
+                  <Input
+                    type="password"
+                    required
+                    minLength={10}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  />
+                </Field>
+                {error && error !== "mfa_required" && <Notice tone="neg">{error}</Notice>}
+                <Button type="submit" className="w-full" disabled={busy}>
+                  {busy ? t("common.loading") : t(mode === "login" ? "auth.signIn" : "auth.signUp")}
                 </Button>
               </form>
-              <button
-                type="button"
-                className="btn-ghost mt-3 flex w-full items-center justify-center gap-1.5 text-xs text-muted hover:text-ink"
-                onClick={handlePasskeyLogin}
-                disabled={busy}
-              >
-                <KeyRound size={13} /> {t("auth.usePasskey")}
-              </button>
+              <Button variant="ghost" className="mt-2 w-full" onClick={handlePasskeyLogin} disabled={busy}>
+                <KeyRound size={16} aria-hidden /> {t("auth.usePasskey")}
+              </Button>
             </>
           )}
           {error === "mfa_required" && (
-            <p className="mt-3 text-center text-xs text-muted">Enter your 2FA code to continue.</p>
+            <p className="mt-3 text-center text-sm text-muted">{t("auth.mfaContinue")}</p>
           )}
         </Card>
-        <p className="mt-6 text-center text-xs text-muted/70">
-          demo@financebuddy.app · DemoPass123!
-        </p>
-      </motion.div>
+        {DEMO_MODE && (
+          <p className="mt-6 text-center text-xs text-muted" data-testid="demo-credentials">
+            {DEMO_EMAIL} · DemoPass123!
+          </p>
+        )}
+      </div>
     </div>
   );
 }

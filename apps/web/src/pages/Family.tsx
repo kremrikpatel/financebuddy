@@ -1,38 +1,24 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  Users,
-  UserPlus,
-  Shield,
-  ShieldAlert,
-  Edit2,
-  Trash2,
-  DollarSign,
-  TrendingUp,
-  AlertCircle,
-  CheckCircle2,
-} from "lucide-react";
+import { Users, UserPlus, Shield, Pencil, Trash2, TrendingUp, AlertCircle, Plus } from "lucide-react";
 import { http } from "@/lib/api";
 import {
-  Badge,
-  Button,
-  Card,
-  Input,
-  Modal,
-  SectionTitle,
-  Select,
-  Spinner,
+  Badge, Button, Card, Input, Modal, SectionTitle, Select, PageHeader, StatTile, PageSkeleton, EmptyState,
+  Field, Notice, IconButton, Meter,
 } from "@/components/ui";
 import { fmtMoney } from "@/lib/utils";
 import { useAuth } from "@/stores/auth";
+import { useCoachContext } from "@/lib/coachTabs";
+
+type Role = "owner" | "admin" | "member" | "child";
 
 interface Member {
   id: string;
   user_id: string;
   name: string;
   email: string;
-  role: "owner" | "admin" | "member" | "child";
+  role: Role;
   spending_limit_minor: number | null;
   spent_this_month_minor: number;
   is_active: boolean;
@@ -50,64 +36,50 @@ interface FamilyOverview {
   total_spent_minor: number;
 }
 
+const roleTone = (role: string): "brand" | "pos" | "warn" | "neutral" =>
+  role === "owner" ? "brand" : role === "admin" ? "pos" : role === "child" ? "warn" : "neutral";
+
 export default function FamilyPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const qc = useQueryClient();
   const currentUser = useAuth((s) => s.user);
+  const currency = currentUser?.base_currency || "AUD";
+  const money = (minor: number) => fmtMoney(minor, currency, i18n.language);
 
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [editMember, setEditMember] = useState<Member | null>(null);
   const [removeMember, setRemoveMember] = useState<Member | null>(null);
 
-  // Form states
   const [groupName, setGroupName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"owner" | "admin" | "member" | "child">("member");
+  const [inviteRole, setInviteRole] = useState<Role>("member");
   const [inviteLimit, setInviteLimit] = useState("");
-  const [editRole, setEditRole] = useState<"owner" | "admin" | "member" | "child">("member");
+  const [editRole, setEditRole] = useState<Role>("member");
   const [editLimit, setEditLimit] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const {
-    data: overview,
-    isLoading,
-    isError,
-  } = useQuery<FamilyOverview>({
+  const { data: overview, isLoading, isError } = useQuery<FamilyOverview>({
     queryKey: ["family-overview"],
-    queryFn: async () => {
-      const res = await http.get("/family/overview");
-      return res.data;
-    },
+    queryFn: async () => (await http.get("/family/overview")).data,
     retry: false,
   });
 
   const createGroupMutation = useMutation({
-    mutationFn: async (name: string) => {
-      const res = await http.post("/family", { name });
-      return res.data;
-    },
+    mutationFn: async (name: string) => (await http.post("/family", { name })).data,
     onSuccess: () => {
       setCreateGroupOpen(false);
       setGroupName("");
       setErrorMessage(null);
       void qc.invalidateQueries({ queryKey: ["family-overview"] });
     },
-    onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to create family group");
-    },
+    onError: (err: any) => setErrorMessage(err?.response?.data?.detail || t("family.createFailed")),
   });
 
   const inviteMemberMutation = useMutation({
-    mutationFn: async (payload: {
-      email: string;
-      role: string;
-      spending_limit_minor: number | null;
-    }) => {
-      const res = await http.post("/family/members/invite", payload);
-      return res.data;
-    },
+    mutationFn: async (payload: { email: string; role: string; spending_limit_minor: number | null }) =>
+      (await http.post("/family/members/invite", payload)).data,
     onSuccess: () => {
       setInviteOpen(false);
       setInviteEmail("");
@@ -116,9 +88,7 @@ export default function FamilyPage() {
       setErrorMessage(null);
       void qc.invalidateQueries({ queryKey: ["family-overview"] });
     },
-    onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to invite member");
-    },
+    onError: (err: any) => setErrorMessage(err?.response?.data?.detail || t("family.inviteFailed")),
   });
 
   const updateMemberMutation = useMutation({
@@ -132,22 +102,13 @@ export default function FamilyPage() {
       role: string;
       spending_limit_minor: number | null;
       is_active: boolean;
-    }) => {
-      const res = await http.patch(`/family/members/${memberId}`, {
-        role,
-        spending_limit_minor,
-        is_active,
-      });
-      return res.data;
-    },
+    }) => (await http.patch(`/family/members/${memberId}`, { role, spending_limit_minor, is_active })).data,
     onSuccess: () => {
       setEditMember(null);
       setErrorMessage(null);
       void qc.invalidateQueries({ queryKey: ["family-overview"] });
     },
-    onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to update member");
-    },
+    onError: (err: any) => setErrorMessage(err?.response?.data?.detail || t("family.updateFailed")),
   });
 
   const deleteMemberMutation = useMutation({
@@ -159,19 +120,13 @@ export default function FamilyPage() {
       setErrorMessage(null);
       void qc.invalidateQueries({ queryKey: ["family-overview"] });
     },
-    onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to remove member");
-    },
+    onError: (err: any) => setErrorMessage(err?.response?.data?.detail || t("family.removeFailed")),
   });
 
   function openEditModal(m: Member) {
     setEditMember(m);
     setEditRole(m.role);
-    setEditLimit(
-      m.spending_limit_minor !== null
-        ? (m.spending_limit_minor / 100).toFixed(2)
-        : "",
-    );
+    setEditLimit(m.spending_limit_minor !== null ? (m.spending_limit_minor / 100).toFixed(2) : "");
     setEditIsActive(m.is_active);
     setErrorMessage(null);
   }
@@ -185,9 +140,7 @@ export default function FamilyPage() {
   function handleInvite(e: React.FormEvent) {
     e.preventDefault();
     if (!inviteEmail.trim()) return;
-    const limitMinor = inviteLimit.trim()
-      ? Math.round(parseFloat(inviteLimit) * 100)
-      : null;
+    const limitMinor = inviteLimit.trim() ? Math.round(parseFloat(inviteLimit) * 100) : null;
     inviteMemberMutation.mutate({
       email: inviteEmail.trim(),
       role: inviteRole,
@@ -198,9 +151,7 @@ export default function FamilyPage() {
   function handleUpdate(e: React.FormEvent) {
     e.preventDefault();
     if (!editMember) return;
-    const limitMinor = editLimit.trim()
-      ? Math.round(parseFloat(editLimit) * 100)
-      : null;
+    const limitMinor = editLimit.trim() ? Math.round(parseFloat(editLimit) * 100) : null;
     updateMemberMutation.mutate({
       memberId: editMember.id,
       role: editRole,
@@ -209,68 +160,55 @@ export default function FamilyPage() {
     });
   }
 
-  const roleTone = (role: string): "brand" | "pos" | "warn" | "neutral" => {
-    switch (role) {
-      case "owner":
-        return "brand";
-      case "admin":
-        return "pos";
-      case "child":
-        return "warn";
-      default:
-        return "neutral";
-    }
-  };
+  const roleOptions = (
+    <>
+      <option value="member">{t("family.roles.member")}</option>
+      <option value="admin">{t("family.roles.admin")}</option>
+      <option value="child">{t("family.roles.child")}</option>
+      <option value="owner">{t("family.roles.owner")}</option>
+    </>
+  );
 
-  if (isLoading) return <Spinner label={t("common.loading")} />;
+  // Aggregates only: member names and emails are never sent to the coach.
+  const familyMembers = overview?.members ?? [];
+  useCoachContext(overview?.group ? {
+    currency,
+    members: familyMembers.length,
+    active_members: familyMembers.filter((m) => m.is_active).length,
+    members_with_limits: familyMembers.filter((m) => m.spending_limit_minor !== null).length,
+    members_over_limit: familyMembers.filter((m) => m.spending_limit_minor && m.spent_this_month_minor > m.spending_limit_minor).length,
+    household_spend_this_month: overview.total_spent_minor / 100,
+  } : { family_group: null });
 
-  // Empty state if no group exists
+  if (isLoading) return <PageSkeleton tiles={3} />;
+
   if (isError || !overview?.group) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-ink">{t("family.title")}</h1>
-          <p className="text-sm text-muted">{t("family.subtitle")}</p>
-        </div>
-
-        <Card className="flex flex-col items-center justify-center p-12 text-center">
-          <div className="mb-4 grid size-16 place-items-center rounded-2xl bg-brand/10 text-brand">
-            <Users size={32} />
-          </div>
-          <h2 className="text-lg font-semibold text-ink">
-            {t("family.createGroup")}
-          </h2>
-          <p className="mt-1 max-w-md text-sm text-muted">
-            {t("family.noGroupPrompt")}
-          </p>
-          <Button
-            onClick={() => {
-              setGroupName("");
-              setErrorMessage(null);
-              setCreateGroupOpen(true);
-            }}
-            className="mt-6"
-          >
-            + {t("family.createGroup")}
-          </Button>
+        <PageHeader title={t("family.title")} subtitle={t("family.subtitle")} />
+        <Card>
+          <EmptyState
+            icon={<Users size={22} />}
+            title={t("family.createGroup")}
+            body={t("family.noGroupPrompt")}
+            action={
+              <Button
+                onClick={() => {
+                  setGroupName("");
+                  setErrorMessage(null);
+                  setCreateGroupOpen(true);
+                }}
+              >
+                <Plus size={16} aria-hidden /> {t("family.createGroup")}
+              </Button>
+            }
+          />
         </Card>
 
-        {/* Create Group Modal */}
-        <Modal
-          open={createGroupOpen}
-          onClose={() => setCreateGroupOpen(false)}
-          title={t("family.createGroup")}
-        >
+        <Modal open={createGroupOpen} onClose={() => setCreateGroupOpen(false)} title={t("family.createGroup")}>
           <form onSubmit={handleCreateGroup} className="space-y-4">
-            {errorMessage && (
-              <div className="rounded-xl bg-neg/10 p-3 text-xs text-neg">
-                {errorMessage}
-              </div>
-            )}
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted">
-                {t("family.groupName")}
-              </label>
+            {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
+            <Field label={t("family.groupName")}>
               <Input
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
@@ -278,15 +216,9 @@ export default function FamilyPage() {
                 required
                 autoFocus
               />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setCreateGroupOpen(false)}
-              >
-                {t("common.cancel")}
-              </Button>
+            </Field>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="ghost" onClick={() => setCreateGroupOpen(false)}>{t("common.cancel")}</Button>
               <Button type="submit" disabled={createGroupMutation.isPending}>
                 {createGroupMutation.isPending ? t("common.loading") : t("common.save")}
               </Button>
@@ -308,91 +240,52 @@ export default function FamilyPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-ink">{overview.group.name}</h1>
-            <Badge tone="brand">Family Group</Badge>
-          </div>
-          <p className="text-sm text-muted">{t("family.subtitle")}</p>
-        </div>
+      <PageHeader
+        title={overview.group.name}
+        badge={<Badge tone="brand">{t("family.groupBadge")}</Badge>}
+        subtitle={t("family.subtitle")}
+        actions={
+          isCallerAdminOrOwner && (
+            <Button
+              onClick={() => {
+                setInviteEmail("");
+                setInviteLimit("");
+                setInviteRole("member");
+                setErrorMessage(null);
+                setInviteOpen(true);
+              }}
+            >
+              <UserPlus size={16} aria-hidden /> {t("family.inviteMember")}
+            </Button>
+          )
+        }
+      />
 
-        {isCallerAdminOrOwner && (
-          <Button
-            onClick={() => {
-              setInviteEmail("");
-              setInviteLimit("");
-              setInviteRole("member");
-              setErrorMessage(null);
-              setInviteOpen(true);
-            }}
-            className="flex items-center gap-2"
-          >
-            <UserPlus size={16} /> {t("family.inviteMember")}
-          </Button>
-        )}
+      <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
+        <StatTile
+          label={t("family.householdSpend")}
+          icon={<TrendingUp size={18} />}
+          value={<span className="num">{money(overview.total_spent_minor)}</span>}
+          hint={t("family.acrossMembers", { count: activeMembersCount })}
+        />
+        <StatTile
+          label={t("family.activeMembers")}
+          icon={<Users size={18} />}
+          value={<span className="num">{activeMembersCount}</span>}
+          hint={t("family.registeredTotal", { count: members.length })}
+        />
+        <StatTile
+          label={t("family.supervisedAccounts")}
+          icon={<Shield size={18} />}
+          value={<span className="num">{childMembersCount}</span>}
+          hint={t("family.withLimits")}
+          className="sm:col-span-2 lg:col-span-1"
+        />
       </div>
 
-      {/* KPI Overview Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("family.householdSpend")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-brand/10 text-brand">
-              <TrendingUp size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {fmtMoney(overview.total_spent_minor, currentUser?.base_currency || "AUD")}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            Across {activeMembersCount} active member{activeMembersCount === 1 ? "" : "s"}
-          </p>
-        </Card>
-
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("family.activeMembers")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-pos/10 text-pos">
-              <Users size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {activeMembersCount}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            {members.length} registered total
-          </p>
-        </Card>
-
-        <Card className="p-5 sm:col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              {t("family.supervisedAccounts")}
-            </span>
-            <div className="grid size-8 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
-              <Shield size={16} />
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {childMembersCount}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            With active spending limits
-          </p>
-        </Card>
-      </div>
-
-      {/* Members Section */}
-      <Card>
+      <Card as="section">
         <SectionTitle>{t("family.membersList")}</SectionTitle>
-
-        <div className="space-y-4 pt-1">
+        <ul className="divide-y divide-line">
           {members.map((m) => {
             const hasLimit = m.spending_limit_minor !== null && m.spending_limit_minor > 0;
             const spentMinor = m.spent_this_month_minor || 0;
@@ -402,137 +295,80 @@ export default function FamilyPage() {
             const isNearLimit = hasLimit && !isOverLimit && pct >= 80;
 
             return (
-              <div
-                key={m.id}
-                className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-4 transition md:flex-row md:items-center md:justify-between"
-              >
-                {/* Member Identity & Role */}
-                <div className="flex items-center gap-3">
-                  <div className="grid size-10 place-items-center rounded-xl bg-brand/10 text-sm font-bold text-brand">
-                    {m.name ? m.name.charAt(0).toUpperCase() : m.email.charAt(0).toUpperCase()}
+              <li key={m.id} className="flex flex-col gap-4 py-4 first:pt-0 last:pb-0 md:flex-row md:items-center md:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="grid size-10 shrink-0 place-items-center rounded-full bg-brand/10 text-sm font-semibold text-brand" aria-hidden>
+                    {(m.name || m.email).charAt(0).toUpperCase()}
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-semibold text-ink">{m.name}</p>
-                      <Badge tone={roleTone(m.role)}>
-                        {t(`family.roles.${m.role}`, m.role)}
-                      </Badge>
-                      {!m.is_active && (
-                        <Badge tone="warn">{t("family.statusInactive")}</Badge>
-                      )}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate font-medium text-ink">{m.name}</p>
+                      <Badge tone={roleTone(m.role)}>{t(`family.roles.${m.role}`, m.role)}</Badge>
+                      {!m.is_active && <Badge tone="warn">{t("family.statusInactive")}</Badge>}
                     </div>
-                    <p className="text-xs text-muted">{m.email}</p>
+                    <p className="truncate text-sm text-muted">{m.email}</p>
                   </div>
                 </div>
 
-                {/* Spending Progress Tracker */}
                 <div className="flex-1 md:max-w-xs">
-                  <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <div className="mb-1.5 flex items-center justify-between gap-2 text-sm">
                     <span className="text-muted">
-                      {t("family.spentThisMonth")}:{" "}
-                      <b className="text-ink">
-                        {fmtMoney(spentMinor, currentUser?.base_currency || "AUD")}
-                      </b>
+                      {t("family.spentThisMonth")} <b className="num font-semibold text-ink">{money(spentMinor)}</b>
                     </span>
-                    <span className="font-medium text-muted">
-                      {hasLimit ? (
-                        <>
-                          / {fmtMoney(m.spending_limit_minor!, currentUser?.base_currency || "AUD")}
-                        </>
-                      ) : (
-                        t("family.unlimited")
-                      )}
+                    <span className="num text-muted">
+                      {hasLimit ? `/ ${money(m.spending_limit_minor!)}` : t("family.unlimited")}
                     </span>
                   </div>
-
                   {hasLimit ? (
                     <div className="space-y-1">
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-raised">
-                        <div
-                          className={`h-full rounded-full transition-all ${
-                            isOverLimit
-                              ? "bg-neg"
-                              : isNearLimit
-                              ? "bg-amber-500"
-                              : "bg-brand"
-                          }`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className={isOverLimit ? "font-semibold text-neg" : "text-muted"}>
-                          {pct}% used
-                        </span>
+                      <Meter
+                        value={pct}
+                        tone={isOverLimit ? "neg" : isNearLimit ? "warn" : "brand"}
+                        label={t("family.limitMeter", { name: m.name, pct })}
+                      />
+                      <div className="flex items-center justify-between text-xs">
+                        <span className={isOverLimit ? "font-semibold text-neg" : "text-muted"}>{t("family.pctUsed", { pct })}</span>
                         {isOverLimit ? (
-                          <span className="font-semibold text-neg flex items-center gap-0.5">
-                            <AlertCircle size={10} /> {t("family.exceeded")}
+                          <span className="flex items-center gap-1 font-semibold text-neg">
+                            <AlertCircle size={12} aria-hidden /> {t("family.exceeded")}
                           </span>
                         ) : (
-                          <span className="text-pos">
-                            {fmtMoney(
-                              Math.max(0, m.spending_limit_minor! - spentMinor),
-                              currentUser?.base_currency || "AUD",
-                            )}{" "}
-                            {t("family.remaining")}
+                          <span className="text-muted">
+                            {t("family.remainingAmount", { amount: money(Math.max(0, m.spending_limit_minor! - spentMinor)) })}
                           </span>
                         )}
                       </div>
                     </div>
                   ) : (
-                    <div className="text-[11px] text-muted italic">
-                      {t("family.noLimit")}
-                    </div>
+                    <p className="text-sm text-muted">{t("family.noLimit")}</p>
                   )}
                 </div>
 
-                {/* Actions */}
                 {isCallerAdminOrOwner && (
-                  <div className="flex items-center gap-1.5 self-end md:self-center">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openEditModal(m)}
-                      title={t("family.editMember")}
-                      className="px-2.5"
-                    >
-                      <Edit2 size={13} /> {t("common.edit")}
+                  <div className="flex items-center gap-1 self-end md:self-center">
+                    <Button size="sm" variant="secondary" onClick={() => openEditModal(m)}>
+                      <Pencil size={14} aria-hidden /> {t("common.edit")}
                     </Button>
                     {m.role !== "owner" && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
+                      <IconButton
+                        label={t("family.removeNamed", { name: m.name })}
+                        icon={<Trash2 size={16} />}
                         onClick={() => setRemoveMember(m)}
-                        title={t("family.removeMember")}
-                        className="px-2 text-neg hover:bg-neg/10"
-                      >
-                        <Trash2 size={13} />
-                      </Button>
+                        className="text-neg hover:bg-neg/10 hover:text-neg"
+                      />
                     )}
                   </div>
                 )}
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       </Card>
 
-      {/* Invite Member Modal */}
-      <Modal
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-        title={t("family.inviteMember")}
-      >
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title={t("family.inviteMember")}>
         <form onSubmit={handleInvite} className="space-y-4">
-          {errorMessage && (
-            <div className="rounded-xl bg-neg/10 p-3 text-xs text-neg">
-              {errorMessage}
-            </div>
-          )}
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("auth.email")}
-            </label>
+          {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
+          <Field label={t("auth.email")}>
             <Input
               type="email"
               value={inviteEmail}
@@ -540,49 +376,17 @@ export default function FamilyPage() {
               placeholder={t("family.emailPlaceholder")}
               required
               autoFocus
+              dir="ltr"
             />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("family.role")}
-            </label>
-            <Select
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as any)}
-            >
-              <option value="member">{t("family.roles.member")}</option>
-              <option value="admin">{t("family.roles.admin")}</option>
-              <option value="child">{t("family.roles.child")}</option>
-              <option value="owner">{t("family.roles.owner")}</option>
-            </Select>
-            <p className="mt-1 text-[11px] text-muted">
-              {t(`family.roleDescriptions.${inviteRole}`)}
-            </p>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("family.spendingLimit")} ({currentUser?.base_currency || "AUD"})
-            </label>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={inviteLimit}
-              onChange={(e) => setInviteLimit(e.target.value)}
-              placeholder={t("family.spendingLimitPlaceholder")}
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setInviteOpen(false)}
-            >
-              {t("common.cancel")}
-            </Button>
+          </Field>
+          <Field label={t("family.role")} hint={t(`family.roleDescriptions.${inviteRole}`)}>
+            <Select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as Role)}>{roleOptions}</Select>
+          </Field>
+          <Field label={`${t("family.spendingLimit")} (${currency})`} hint={t("family.spendingLimitPlaceholder")}>
+            <Input type="number" inputMode="decimal" step="0.01" min="0" value={inviteLimit} onChange={(e) => setInviteLimit(e.target.value)} />
+          </Field>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={() => setInviteOpen(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={inviteMemberMutation.isPending}>
               {inviteMemberMutation.isPending ? t("common.loading") : t("family.inviteMember")}
             </Button>
@@ -590,74 +394,25 @@ export default function FamilyPage() {
         </form>
       </Modal>
 
-      {/* Edit Member Modal */}
-      <Modal
-        open={Boolean(editMember)}
-        onClose={() => setEditMember(null)}
-        title={t("family.editMember")}
-      >
+      <Modal open={Boolean(editMember)} onClose={() => setEditMember(null)} title={t("family.editMember")}>
         <form onSubmit={handleUpdate} className="space-y-4">
-          {errorMessage && (
-            <div className="rounded-xl bg-neg/10 p-3 text-xs text-neg">
-              {errorMessage}
-            </div>
-          )}
-
+          {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
           <div>
-            <p className="text-sm font-semibold text-ink">{editMember?.name}</p>
-            <p className="text-xs text-muted">{editMember?.email}</p>
+            <p className="font-medium text-ink">{editMember?.name}</p>
+            <p className="text-sm text-muted">{editMember?.email}</p>
           </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("family.role")}
-            </label>
-            <Select
-              value={editRole}
-              onChange={(e) => setEditRole(e.target.value as any)}
-            >
-              <option value="member">{t("family.roles.member")}</option>
-              <option value="admin">{t("family.roles.admin")}</option>
-              <option value="child">{t("family.roles.child")}</option>
-              <option value="owner">{t("family.roles.owner")}</option>
-            </Select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("family.spendingLimit")} ({currentUser?.base_currency || "AUD"})
-            </label>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={editLimit}
-              onChange={(e) => setEditLimit(e.target.value)}
-              placeholder={t("family.spendingLimitPlaceholder")}
-            />
-          </div>
-
-          <div className="flex items-center gap-2 pt-1">
-            <input
-              type="checkbox"
-              id="editIsActive"
-              checked={editIsActive}
-              onChange={(e) => setEditIsActive(e.target.checked)}
-              className="size-4 rounded border-line text-brand focus:ring-brand"
-            />
-            <label htmlFor="editIsActive" className="text-xs font-medium text-ink">
-              {t("family.statusActive")}
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setEditMember(null)}
-            >
-              {t("common.cancel")}
-            </Button>
+          <Field label={t("family.role")}>
+            <Select value={editRole} onChange={(e) => setEditRole(e.target.value as Role)}>{roleOptions}</Select>
+          </Field>
+          <Field label={`${t("family.spendingLimit")} (${currency})`} hint={t("family.spendingLimitPlaceholder")}>
+            <Input type="number" inputMode="decimal" step="0.01" min="0" value={editLimit} onChange={(e) => setEditLimit(e.target.value)} />
+          </Field>
+          <label className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-ink">
+            <input type="checkbox" checked={editIsActive} onChange={(e) => setEditIsActive(e.target.checked)} className="size-4 accent-brand" />
+            {t("family.statusActive")}
+          </label>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={() => setEditMember(null)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={updateMemberMutation.isPending}>
               {updateMemberMutation.isPending ? t("common.loading") : t("common.save")}
             </Button>
@@ -665,27 +420,16 @@ export default function FamilyPage() {
         </form>
       </Modal>
 
-      {/* Remove Confirmation Modal */}
-      <Modal
-        open={Boolean(removeMember)}
-        onClose={() => setRemoveMember(null)}
-        title={t("family.removeMember")}
-      >
+      <Modal open={Boolean(removeMember)} onClose={() => setRemoveMember(null)} title={t("family.removeMember")}>
         <div className="space-y-4">
+          {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
           <p className="text-sm text-ink">{t("family.confirmRemove")}</p>
-          <div className="rounded-xl bg-raised p-3 text-xs">
-            <p className="font-semibold text-ink">{removeMember?.name}</p>
+          <div className="rounded-lg bg-sunken p-3 text-sm">
+            <p className="font-medium text-ink">{removeMember?.name}</p>
             <p className="text-muted">{removeMember?.email}</p>
           </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRemoveMember(null)}
-            >
-              {t("common.cancel")}
-            </Button>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={() => setRemoveMember(null)}>{t("common.cancel")}</Button>
             <Button
               variant="danger"
               disabled={deleteMemberMutation.isPending}
@@ -693,7 +437,7 @@ export default function FamilyPage() {
                 if (removeMember) deleteMemberMutation.mutate(removeMember.id);
               }}
             >
-              {deleteMemberMutation.isPending ? t("common.loading") : t("common.delete")}
+              {deleteMemberMutation.isPending ? t("common.loading") : t("family.removeMember")}
             </Button>
           </div>
         </div>

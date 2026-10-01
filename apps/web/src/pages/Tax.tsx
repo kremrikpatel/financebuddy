@@ -1,32 +1,14 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  Receipt,
-  FileText,
-  Calculator,
-  Sparkles,
-  Plus,
-  Trash2,
-  Building2,
-  Percent,
-  CheckCircle2,
-  TrendingDown,
-  ExternalLink,
-  ShieldCheck,
-} from "lucide-react";
+import { Sparkles, Plus, Trash2, Building2, ExternalLink } from "lucide-react";
 import { http } from "@/lib/api";
 import {
-  Badge,
-  Button,
-  Card,
-  Input,
-  Modal,
-  SectionTitle,
-  Select,
-  Spinner,
+  Badge, Button, Card, Input, Modal, SectionTitle, Select, PageHeader, StatTile, Table, Field, Notice,
+  IconButton, Segmented, EmptyState, PageSkeleton,
 } from "@/components/ui";
 import { fmtMoney } from "@/lib/utils";
+import { useCoachContext } from "@/lib/coachTabs";
 
 interface TaxProfile {
   id: string;
@@ -98,32 +80,31 @@ interface BasReport {
   status: string;
 }
 
+const CURRENCY = "AUD";
+
 export default function TaxPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const qc = useQueryClient();
+  const money = (minor: number) => fmtMoney(minor, CURRENCY, i18n.language);
 
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [selectedQuarter, setSelectedQuarter] = useState<number>(1);
 
-  // Modals
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [deductionModalOpen, setDeductionModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Profile Form state
   const [businessType, setBusinessType] = useState<"sole_trader" | "company" | "partnership">("sole_trader");
   const [abn, setAbn] = useState("");
   const [gstRegistered, setGstRegistered] = useState(true);
 
-  // Deduction Form state
   const [categoryId, setCategoryId] = useState("");
   const [deductionAmount, setDeductionAmount] = useState("");
   const [deductionGst, setDeductionGst] = useState("");
   const [deductionNotes, setDeductionNotes] = useState("");
   const [deductionReceipt, setDeductionReceipt] = useState("");
 
-  // Queries
   const profileQuery = useQuery<TaxProfile>({
     queryKey: ["tax-profile", selectedYear],
     queryFn: async () => {
@@ -139,45 +120,29 @@ export default function TaxPage() {
 
   const summaryQuery = useQuery<TaxSummary>({
     queryKey: ["tax-summary", selectedYear],
-    queryFn: async () => {
-      const res = await http.get(`/tax/summary?tax_year=${selectedYear}`);
-      return res.data;
-    },
+    queryFn: async () => (await http.get(`/tax/summary?tax_year=${selectedYear}`)).data,
   });
 
   const deductionsQuery = useQuery<TaxDeduction[]>({
     queryKey: ["tax-deductions", selectedYear],
-    queryFn: async () => {
-      const res = await http.get(`/tax/deductions?tax_year=${selectedYear}`);
-      return res.data;
-    },
+    queryFn: async () => (await http.get(`/tax/deductions?tax_year=${selectedYear}`)).data,
   });
 
   const categoriesQuery = useQuery<TaxCategory[]>({
     queryKey: ["tax-categories"],
-    queryFn: async () => {
-      const res = await http.get("/tax/categories");
-      return res.data;
-    },
+    queryFn: async () => (await http.get("/tax/categories")).data,
   });
 
   const suggestionsQuery = useQuery<DeductionSuggestion[]>({
     queryKey: ["tax-suggestions"],
-    queryFn: async () => {
-      const res = await http.get("/tax/suggestions");
-      return res.data;
-    },
+    queryFn: async () => (await http.get("/tax/suggestions")).data,
   });
 
   const basQuery = useQuery<BasReport>({
     queryKey: ["tax-bas", selectedYear, selectedQuarter],
-    queryFn: async () => {
-      const res = await http.get(`/tax/bas?tax_year=${selectedYear}&quarter=${selectedQuarter}`);
-      return res.data;
-    },
+    queryFn: async () => (await http.get(`/tax/bas?tax_year=${selectedYear}&quarter=${selectedQuarter}`)).data,
   });
 
-  // Mutations
   const saveProfileMutation = useMutation({
     mutationFn: async (payload: {
       tax_year: number;
@@ -185,10 +150,7 @@ export default function TaxPage() {
       abn: string | null;
       gst_registered: boolean;
       country: string;
-    }) => {
-      const res = await http.post("/tax/profile", payload);
-      return res.data;
-    },
+    }) => (await http.post("/tax/profile", payload)).data,
     onSuccess: () => {
       setProfileModalOpen(false);
       setErrorMessage(null);
@@ -197,7 +159,7 @@ export default function TaxPage() {
       void qc.invalidateQueries({ queryKey: ["tax-bas"] });
     },
     onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to save tax profile");
+      setErrorMessage(err?.response?.data?.detail || t("tax.saveProfileFailed"));
     },
   });
 
@@ -209,10 +171,7 @@ export default function TaxPage() {
       gst_claimed_minor: number;
       notes?: string;
       receipt_url?: string;
-    }) => {
-      const res = await http.post("/tax/deductions", payload);
-      return res.data;
-    },
+    }) => (await http.post("/tax/deductions", payload)).data,
     onSuccess: () => {
       setDeductionModalOpen(false);
       setDeductionAmount("");
@@ -225,22 +184,22 @@ export default function TaxPage() {
       void qc.invalidateQueries({ queryKey: ["tax-bas"] });
     },
     onError: (err: any) => {
-      setErrorMessage(err?.response?.data?.detail || "Failed to add deduction");
+      setErrorMessage(err?.response?.data?.detail || t("tax.addDeductionFailed"));
     },
   });
 
   const claimSuggestionMutation = useMutation({
-    mutationFn: async (s: DeductionSuggestion) => {
-      const res = await http.post("/tax/deductions", {
-        tax_year: selectedYear,
-        tax_category_code: s.suggested_category_code,
-        transaction_id: s.transaction_id,
-        amount_minor: s.amount_minor,
-        gst_claimed_minor: Math.round(s.amount_minor / 11),
-        notes: `${s.merchant_raw} - ${s.description || s.reasoning}`,
-      });
-      return res.data;
-    },
+    mutationFn: async (s: DeductionSuggestion) =>
+      (
+        await http.post("/tax/deductions", {
+          tax_year: selectedYear,
+          tax_category_code: s.suggested_category_code,
+          transaction_id: s.transaction_id,
+          amount_minor: s.amount_minor,
+          gst_claimed_minor: Math.round(s.amount_minor / 11),
+          notes: `${s.merchant_raw} - ${s.description || s.reasoning}`,
+        })
+      ).data,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["tax-deductions"] });
       void qc.invalidateQueries({ queryKey: ["tax-summary"] });
@@ -269,6 +228,16 @@ export default function TaxPage() {
     }
     setErrorMessage(null);
     setProfileModalOpen(true);
+  }
+
+  function openAddDeduction() {
+    setCategoryId(categoriesQuery.data?.[0]?.id || "");
+    setDeductionAmount("");
+    setDeductionGst("");
+    setDeductionNotes("");
+    setDeductionReceipt("");
+    setErrorMessage(null);
+    setDeductionModalOpen(true);
   }
 
   function handleSaveProfile(e: React.FormEvent) {
@@ -301,437 +270,292 @@ export default function TaxPage() {
     });
   }
 
+  useCoachContext({
+    tax_year: selectedYear,
+    bas_quarter: selectedQuarter,
+    currency: CURRENCY,
+    business_type: profileQuery.data?.business_type ?? null,
+    gst_registered: profileQuery.data?.gst_registered ?? null,
+    estimated_tax: summaryQuery.data ? summaryQuery.data.estimated_tax_minor / 100 : null,
+    taxable_income: summaryQuery.data ? summaryQuery.data.taxable_income_minor / 100 : null,
+    total_deductions: summaryQuery.data ? summaryQuery.data.total_deductions_minor / 100 : null,
+    effective_rate_pct: summaryQuery.data?.effective_rate_pct ?? null,
+    deductions_claimed: (deductionsQuery.data ?? []).length,
+    deduction_suggestions: (suggestionsQuery.data ?? []).length,
+    net_gst: basQuery.data ? basQuery.data.net_gst_minor / 100 : null,
+  });
+
+  if (summaryQuery.isLoading && profileQuery.isLoading) return <PageSkeleton />;
+
   const summary = summaryQuery.data;
   const profile = profileQuery.data;
   const deductions = deductionsQuery.data || [];
   const suggestions = suggestionsQuery.data || [];
   const bas = basQuery.data;
-
-  const currency = "AUD";
+  const netGst = bas?.net_gst_minor || 0;
 
   return (
     <div className="space-y-6">
-      {/* Top Header & Year Filter */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-ink">{t("tax.title")}</h1>
-          <p className="text-sm text-muted">{t("tax.subtitle")}</p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted">
-            {t("tax.taxYear")}:
+      <PageHeader
+        title={t("tax.title")}
+        subtitle={t("tax.subtitle")}
+        actions={
+          <label className="flex items-center gap-2 text-sm font-medium text-muted">
+            {t("tax.taxYear")}
             <Select
               value={selectedYear}
               onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
-              className="h-9 w-28 py-1 text-sm font-semibold text-ink"
+              className="h-10 w-28 py-0"
             >
               {[currentYear, currentYear - 1, currentYear - 2].map((y) => (
-                <option key={y} value={y}>
-                  FY {y}
-                </option>
+                <option key={y} value={y}>{t("tax.fy", { year: y })}</option>
               ))}
             </Select>
           </label>
-        </div>
-      </div>
+        }
+      />
 
-      {/* Tax Profile Card */}
-      <Card className="flex flex-col gap-4 border-brand/20 bg-gradient-to-r from-brand/5 via-surface to-surface p-5 sm:flex-row sm:items-center sm:justify-between">
+      {summaryQuery.isError && (
+        <Notice tone="neg">
+          {t("common.errorBody")}{" "}
+          <button type="button" className="font-semibold underline" onClick={() => void summaryQuery.refetch()}>
+            {t("common.retry")}
+          </button>
+        </Notice>
+      )}
+
+      <Card className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3.5">
-          <div className="grid size-12 place-items-center rounded-2xl bg-brand text-white shadow-md shadow-brand/20">
-            <Building2 size={22} />
+          <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand" aria-hidden>
+            <Building2 size={20} />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-base font-bold text-ink">
-                {profile
-                  ? t(`tax.businessTypes.${profile.business_type}`, profile.business_type)
-                  : "Sole Trader (AU)"}
-              </h3>
-              <Badge tone="brand">ATO Standard Brackets</Badge>
+              <h2 className="font-semibold text-ink">
+                {t(`tax.businessTypes.${profile?.business_type ?? "sole_trader"}`)}
+              </h2>
+              <Badge tone="brand">{t("tax.atoBrackets")}</Badge>
               {profile?.gst_registered ? (
-                <Badge tone="pos">GST Registered (10%)</Badge>
+                <Badge tone="pos">{t("tax.gstRegisteredBadge")}</Badge>
               ) : (
-                <Badge tone="neutral">No GST</Badge>
+                <Badge>{t("tax.noGst")}</Badge>
               )}
             </div>
-            <p className="mt-0.5 text-xs text-muted">
-              {profile?.abn ? `ABN: ${profile.abn}` : "No ABN recorded"} · Australia
+            <p className="mt-0.5 text-sm text-muted">
+              {profile?.abn ? t("tax.abnValue", { abn: profile.abn }) : t("tax.noAbn")} · {t("tax.australia")}
             </p>
           </div>
         </div>
-
-        <Button size="sm" variant="outline" onClick={openEditProfile}>
+        <Button size="sm" variant="secondary" onClick={openEditProfile}>
           {t("tax.editProfile")}
         </Button>
       </Card>
 
-      {/* Tax Estimate KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="p-5">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-            {t("tax.estimatedTax")}
-          </span>
-          <p className="mt-2 text-2xl font-bold text-brand">
-            {summary ? fmtMoney(summary.estimated_tax_minor, currency) : "—"}
-          </p>
-          <div className="mt-1 flex items-center justify-between text-xs text-muted">
-            <span>{t("tax.effectiveRate")}:</span>
-            <span className="font-semibold text-ink">
-              {summary ? `${summary.effective_rate_pct}%` : "0%"}
-            </span>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-            {t("tax.medicareLevy")}
-          </span>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {summary ? fmtMoney(summary.medicare_levy_minor, currency) : "—"}
-          </p>
-          <div className="mt-1 flex items-center justify-between text-xs text-muted">
-            <span>{t("tax.marginalRate")}:</span>
-            <span className="font-semibold text-ink">
-              {summary ? `${summary.marginal_rate_pct}%` : "0%"}
-            </span>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-            {t("tax.taxableIncome")}
-          </span>
-          <p className="mt-2 text-2xl font-bold text-ink">
-            {summary ? fmtMoney(summary.taxable_income_minor, currency) : "—"}
-          </p>
-          <div className="mt-1 flex items-center justify-between text-xs text-muted">
-            <span>{t("tax.grossIncome")}:</span>
-            <span className="font-medium text-ink">
-              {summary ? fmtMoney(summary.gross_income_minor, currency) : "$0"}
-            </span>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-            {t("tax.totalDeductions")}
-          </span>
-          <p className="mt-2 text-2xl font-bold text-pos">
-            {summary ? fmtMoney(summary.total_deductions_minor, currency) : "—"}
-          </p>
-          <div className="mt-1 flex items-center justify-between text-xs text-muted">
-            <span>Claimed entries:</span>
-            <span className="font-semibold text-pos">{deductions.length}</span>
-          </div>
-        </Card>
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <StatTile
+          label={t("tax.estimatedTax")}
+          tone="brand"
+          value={<span className="num">{summary ? money(summary.estimated_tax_minor) : "-"}</span>}
+          hint={t("tax.effectiveRateValue", { pct: summary?.effective_rate_pct ?? 0 })}
+        />
+        <StatTile
+          label={t("tax.medicareLevy")}
+          value={<span className="num">{summary ? money(summary.medicare_levy_minor) : "-"}</span>}
+          hint={t("tax.marginalRateValue", { pct: summary?.marginal_rate_pct ?? 0 })}
+        />
+        <StatTile
+          label={t("tax.taxableIncome")}
+          value={<span className="num">{summary ? money(summary.taxable_income_minor) : "-"}</span>}
+          hint={t("tax.grossIncomeValue", { amount: money(summary?.gross_income_minor ?? 0) })}
+        />
+        <StatTile
+          label={t("tax.totalDeductions")}
+          tone="pos"
+          value={<span className="num">{summary ? money(summary.total_deductions_minor) : "-"}</span>}
+          hint={t("tax.claimedEntries", { count: deductions.length })}
+        />
       </div>
 
-      {/* Tax Brackets Breakdown Visual Card */}
       {summary?.tax_brackets_used && summary.tax_brackets_used.length > 0 && (
-        <Card className="p-5">
-          <SectionTitle right={<span className="text-xs text-muted font-normal">{t("tax.bracketsInfo")}</span>}>
-            Australian Progressive Tax Calculation
-          </SectionTitle>
-          <div className="space-y-3 pt-2">
+        <Card as="section">
+          <SectionTitle>{t("tax.bracketsTitle")}</SectionTitle>
+          <p className="-mt-2 mb-4 text-sm text-muted">{t("tax.bracketsInfo")}</p>
+          <ul className="divide-y divide-line">
             {summary.tax_brackets_used.map((b, idx) => (
-              <div key={idx} className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between text-xs">
+              <li key={idx} className="flex flex-col gap-1 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="inline-block size-2 rounded-full bg-brand" />
                   <span className="font-medium text-ink">{b.bracket_name}</span>
-                  <Badge tone={b.rate_pct > 0 ? "neutral" : "pos"}>
-                    {b.rate_pct}% tax
-                  </Badge>
+                  <Badge tone={b.rate_pct > 0 ? "neutral" : "pos"}>{t("tax.ratePct", { pct: b.rate_pct })}</Badge>
                 </div>
                 <div className="flex items-center gap-4 text-muted">
-                  <span>
-                    Taxable: <b className="text-ink">{fmtMoney(b.taxable_in_bracket_minor, currency)}</b>
-                  </span>
-                  <span>
-                    Tax: <b className="text-brand">{fmtMoney(b.tax_amount_minor, currency)}</b>
-                  </span>
+                  <span>{t("tax.taxable")} <b className="num font-semibold text-ink">{money(b.taxable_in_bracket_minor)}</b></span>
+                  <span>{t("tax.tax")} <b className="num font-semibold text-ink">{money(b.tax_amount_minor)}</b></span>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </Card>
       )}
 
-      {/* AI Deduction Suggestions */}
       {suggestions.length > 0 && (
-        <Card className="border-brand/30 bg-surface">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-            <div className="flex items-center gap-2">
-              <div className="grid size-7 place-items-center rounded-lg bg-brand/10 text-brand">
-                <Sparkles size={16} />
-              </div>
+        <Card as="section">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div className="flex items-start gap-2.5">
+              <Sparkles size={18} className="mt-0.5 shrink-0 text-brand" aria-hidden />
               <div>
-                <h3 className="text-sm font-bold text-ink">
-                  {t("tax.aiSuggestionsTitle")}
-                </h3>
-                <p className="text-xs text-muted">
-                  {t("tax.aiSuggestionsSubtitle")}
-                </p>
+                <h2 className="font-semibold text-ink">{t("tax.aiSuggestionsTitle")}</h2>
+                <p className="text-sm text-muted">{t("tax.aiSuggestionsSubtitle")}</p>
               </div>
             </div>
-            <Badge tone="brand">{suggestions.length} suggestions</Badge>
+            <Badge tone="brand">{t("tax.suggestionCount", { count: suggestions.length })}</Badge>
           </div>
-
-          <div className="divide-y divide-line/60 pt-1">
+          <ul className="divide-y divide-line">
             {suggestions.map((s) => (
-              <div
-                key={s.transaction_id}
-                className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-ink">{s.merchant_raw}</span>
+              <li key={s.transaction_id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-ink">{s.merchant_raw}</span>
                     <Badge tone="pos">{s.suggested_category_name}</Badge>
-                    <span className="text-xs text-muted">({Math.round(s.confidence_score * 100)}% match)</span>
+                    <span className="text-sm text-muted">{t("tax.matchPct", { pct: Math.round(s.confidence_score * 100) })}</span>
                   </div>
-                  <p className="text-xs text-muted">{s.reasoning}</p>
+                  <p className="text-sm text-muted">{s.reasoning}</p>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-bold text-pos">
-                    {fmtMoney(s.amount_minor, currency)}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => claimSuggestionMutation.mutate(s)}
-                    disabled={claimSuggestionMutation.isPending}
-                    className="flex items-center gap-1.5"
-                  >
-                    <Plus size={13} /> {t("tax.claimSuggestion")}
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="num font-semibold text-ink">{money(s.amount_minor)}</span>
+                  <Button size="sm" onClick={() => claimSuggestionMutation.mutate(s)} disabled={claimSuggestionMutation.isPending}>
+                    <Plus size={14} aria-hidden /> {t("tax.claimSuggestion")}
                   </Button>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </Card>
       )}
 
-      {/* Deductions Tracker Section */}
-      <Card>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <SectionTitle>{t("tax.deductionsTitle")}</SectionTitle>
-          <Button
-            size="sm"
-            onClick={() => {
-              const defaultCat = categoriesQuery.data?.[0]?.id || "";
-              setCategoryId(defaultCat);
-              setDeductionAmount("");
-              setDeductionGst("");
-              setDeductionNotes("");
-              setDeductionReceipt("");
-              setErrorMessage(null);
-              setDeductionModalOpen(true);
-            }}
-            className="flex items-center gap-1.5"
-          >
-            <Plus size={14} /> {t("tax.addManualDeduction")}
-          </Button>
-        </div>
+      <Card as="section">
+        <SectionTitle
+          right={
+            <Button size="sm" onClick={openAddDeduction}>
+              <Plus size={14} aria-hidden /> {t("tax.addManualDeduction")}
+            </Button>
+          }
+        >
+          {t("tax.deductionsTitle")}
+        </SectionTitle>
 
         {deductions.length === 0 ? (
-          <div className="py-8 text-center text-sm text-muted">
-            {t("tax.noDeductions")}
-          </div>
+          <EmptyState title={t("tax.noDeductions")} />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-line text-muted">
-                <tr>
-                  <th className="py-2.5 px-3">{t("tax.category")}</th>
-                  <th className="py-2.5 px-3">{t("tax.notes")}</th>
-                  <th className="py-2.5 px-3 text-right">{t("tax.amount")}</th>
-                  <th className="py-2.5 px-3 text-right">{t("tax.gstClaimed")}</th>
-                  <th className="py-2.5 px-3 text-center">{t("common.actions")}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line/60">
-                {deductions.map((d) => (
-                  <tr key={d.id} className="hover:bg-raised/40 transition">
-                    <td className="py-3 px-3 font-medium text-ink">
-                      <div className="flex items-center gap-2">
-                        <Badge tone="neutral">{d.category_code || "Deduction"}</Badge>
-                        <span>{d.category_name || "General Business"}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-muted max-w-xs truncate">
-                      {d.notes || "—"}
-                      {d.receipt_url && (
-                        <a
-                          href={d.receipt_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="ml-1.5 inline-flex items-center text-brand hover:underline"
-                        >
-                          <ExternalLink size={10} />
-                        </a>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-right font-semibold text-pos">
-                      {fmtMoney(d.amount_minor, currency)}
-                    </td>
-                    <td className="py-3 px-3 text-right text-muted">
-                      {fmtMoney(d.gst_claimed_minor, currency)}
-                    </td>
-                    <td className="py-3 px-3 text-center">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => deleteDeductionMutation.mutate(d.id)}
-                        className="px-2 text-neg hover:bg-neg/10"
-                        title={t("common.delete")}
+          <Table label={t("tax.deductionsTitle")}>
+            <thead>
+              <tr>
+                <th>{t("tax.category")}</th>
+                <th className="hidden sm:table-cell">{t("tax.notes")}</th>
+                <th className="!text-end">{t("tax.amount")}</th>
+                <th className="hidden !text-end sm:table-cell">{t("tax.gstClaimed")}</th>
+                <th><span className="sr-only">{t("common.actions")}</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {deductions.map((d) => (
+                <tr key={d.id}>
+                  <td>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge>{d.category_code || t("tax.deduction")}</Badge>
+                      <span className="font-medium text-ink">{d.category_name || t("tax.generalBusiness")}</span>
+                    </div>
+                  </td>
+                  <td className="hidden max-w-xs text-muted sm:table-cell">
+                    <span className="line-clamp-1">{d.notes || "-"}</span>
+                    {d.receipt_url && (
+                      <a
+                        href={d.receipt_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-brand hover:underline"
                       >
-                        <Trash2 size={13} />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                        <ExternalLink size={12} aria-hidden /> {t("tax.receipt")}
+                      </a>
+                    )}
+                  </td>
+                  <td className="num text-end font-semibold text-ink">{money(d.amount_minor)}</td>
+                  <td className="num hidden text-end text-muted sm:table-cell">{money(d.gst_claimed_minor)}</td>
+                  <td className="w-12 text-end">
+                    <IconButton
+                      label={t("tax.deleteDeduction")}
+                      icon={<Trash2 size={16} />}
+                      onClick={() => deleteDeductionMutation.mutate(d.id)}
+                      className="text-neg hover:bg-neg/10 hover:text-neg"
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
         )}
       </Card>
 
-      {/* Quarterly BAS Preparation View */}
-      <Card>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
+      <Card as="section">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold text-ink">{t("tax.basTitle")}</h3>
-            <p className="text-xs text-muted">{t("tax.basSubtitle")}</p>
+            <h2 className="font-semibold text-ink">{t("tax.basTitle")}</h2>
+            <p className="text-sm text-muted">{t("tax.basSubtitle")}</p>
           </div>
-
-          <div className="flex items-center gap-1 rounded-xl bg-raised p-1">
-            {[1, 2, 3, 4].map((q) => (
-              <button
-                key={q}
-                onClick={() => setSelectedQuarter(q)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                  selectedQuarter === q
-                    ? "bg-brand text-white shadow"
-                    : "text-muted hover:text-ink"
-                }`}
-              >
-                Q{q}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            label={t("tax.quarter")}
+            value={selectedQuarter}
+            onChange={setSelectedQuarter}
+            options={[1, 2, 3, 4].map((q) => ({ value: q, label: `Q${q}` }))}
+          />
         </div>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-xl border border-line bg-surface p-4">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              {t("tax.g1Sales")}
-            </span>
-            <p className="mt-1 text-xl font-bold text-ink">
-              {bas ? fmtMoney(bas.g1_total_sales_minor, currency) : "$0.00"}
-            </p>
-            <p className="mt-1 text-[10px] text-muted">Gross sales including GST</p>
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { label: t("tax.g1Sales"), value: bas?.g1_total_sales_minor ?? 0, help: t("tax.g1Help") },
+            { label: t("tax.g1aGstSales"), value: bas?.g1a_gst_on_sales_minor ?? 0, help: t("tax.g1aHelp") },
+            { label: t("tax.g1bGstPurchases"), value: bas?.g1b_gst_on_purchases_minor ?? 0, help: t("tax.g1bHelp") },
+          ].map((row) => (
+            <div key={row.label} className="rounded-lg bg-sunken p-4">
+              <dt className="text-sm font-medium text-muted">{row.label}</dt>
+              <dd className="num mt-1 text-xl font-semibold text-ink">{money(row.value)}</dd>
+              <dd className="mt-1 text-xs text-muted">{row.help}</dd>
+            </div>
+          ))}
+          <div className="rounded-lg border border-brand/40 bg-brand/5 p-4">
+            <dt className="text-sm font-medium text-brand">{t("tax.netGst")} (1A - 1B)</dt>
+            <dd className={`num mt-1 text-xl font-semibold ${netGst > 0 ? "text-ink" : "text-pos"}`}>{money(Math.abs(netGst))}</dd>
+            <dd className="mt-1 text-xs font-medium text-muted">{netGst >= 0 ? t("tax.gstPayable") : t("tax.gstRefund")}</dd>
           </div>
-
-          <div className="rounded-xl border border-line bg-surface p-4">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              {t("tax.g1aGstSales")}
-            </span>
-            <p className="mt-1 text-xl font-bold text-brand">
-              {bas ? fmtMoney(bas.g1a_gst_on_sales_minor, currency) : "$0.00"}
-            </p>
-            <p className="mt-1 text-[10px] text-muted">1/11th of total GST sales</p>
-          </div>
-
-          <div className="rounded-xl border border-line bg-surface p-4">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              {t("tax.g1bGstPurchases")}
-            </span>
-            <p className="mt-1 text-xl font-bold text-pos">
-              {bas ? fmtMoney(bas.g1b_gst_on_purchases_minor, currency) : "$0.00"}
-            </p>
-            <p className="mt-1 text-[10px] text-muted">GST input credits claimed</p>
-          </div>
-
-          <div className="rounded-xl border border-brand/40 bg-brand/5 p-4">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-brand">
-              {t("tax.netGst")} (1A - 1B)
-            </span>
-            <p
-              className={`mt-1 text-xl font-bold ${
-                (bas?.net_gst_minor || 0) > 0 ? "text-brand" : "text-pos"
-              }`}
-            >
-              {bas ? fmtMoney(Math.abs(bas.net_gst_minor), currency) : "$0.00"}
-            </p>
-            <p className="mt-1 text-[10px] font-medium text-muted">
-              {(bas?.net_gst_minor || 0) >= 0 ? t("tax.gstPayable") : t("tax.gstRefund")}
-            </p>
-          </div>
-        </div>
+        </dl>
       </Card>
 
-      {/* Tax Profile Edit Modal */}
-      <Modal
-        open={profileModalOpen}
-        onClose={() => setProfileModalOpen(false)}
-        title={t("tax.editProfile")}
-      >
+      <Modal open={profileModalOpen} onClose={() => setProfileModalOpen(false)} title={t("tax.editProfile")}>
         <form onSubmit={handleSaveProfile} className="space-y-4">
-          {errorMessage && (
-            <div className="rounded-xl bg-neg/10 p-3 text-xs text-neg">
-              {errorMessage}
-            </div>
-          )}
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("tax.businessType")}
-            </label>
-            <Select
-              value={businessType}
-              onChange={(e) => setBusinessType(e.target.value as any)}
-            >
+          {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
+          <Field label={t("tax.businessType")}>
+            <Select value={businessType} onChange={(e) => setBusinessType(e.target.value as TaxProfile["business_type"])}>
               <option value="sole_trader">{t("tax.businessTypes.sole_trader")}</option>
               <option value="company">{t("tax.businessTypes.company")}</option>
               <option value="partnership">{t("tax.businessTypes.partnership")}</option>
             </Select>
-          </div>
-
+          </Field>
+          <Field label={t("tax.abn")}>
+            <Input value={abn} onChange={(e) => setAbn(e.target.value)} placeholder={t("tax.abnPlaceholder")} inputMode="numeric" />
+          </Field>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("tax.abn")}
-            </label>
-            <Input
-              value={abn}
-              onChange={(e) => setAbn(e.target.value)}
-              placeholder={t("tax.abnPlaceholder")}
-            />
-          </div>
-
-          <div className="flex items-center gap-2 pt-1">
-            <input
-              type="checkbox"
-              id="gstRegistered"
-              checked={gstRegistered}
-              onChange={(e) => setGstRegistered(e.target.checked)}
-              className="size-4 rounded border-line text-brand focus:ring-brand"
-            />
-            <label htmlFor="gstRegistered" className="text-xs font-medium text-ink">
+            <label className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-ink">
+              <input
+                type="checkbox"
+                checked={gstRegistered}
+                onChange={(e) => setGstRegistered(e.target.checked)}
+                className="size-4 accent-brand"
+              />
               {t("tax.gstRegistered")}
             </label>
+            <p className="text-sm text-muted">{t("tax.gstRegisteredHelp")}</p>
           </div>
-          <p className="text-[11px] text-muted">{t("tax.gstRegisteredHelp")}</p>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setProfileModalOpen(false)}
-            >
-              {t("common.cancel")}
-            </Button>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={() => setProfileModalOpen(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={saveProfileMutation.isPending}>
               {saveProfileMutation.isPending ? t("common.loading") : t("common.save")}
             </Button>
@@ -739,97 +563,47 @@ export default function TaxPage() {
         </form>
       </Modal>
 
-      {/* Manual Deduction Modal */}
-      <Modal
-        open={deductionModalOpen}
-        onClose={() => setDeductionModalOpen(false)}
-        title={t("tax.addManualDeduction")}
-      >
+      <Modal open={deductionModalOpen} onClose={() => setDeductionModalOpen(false)} title={t("tax.addManualDeduction")}>
         <form onSubmit={handleAddDeduction} className="space-y-4">
-          {errorMessage && (
-            <div className="rounded-xl bg-neg/10 p-3 text-xs text-neg">
-              {errorMessage}
-            </div>
-          )}
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("tax.category")}
-            </label>
-            <Select
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
-              required
-            >
+          {errorMessage && <Notice tone="neg">{errorMessage}</Notice>}
+          <Field label={t("tax.category")}>
+            <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
               {(categoriesQuery.data || []).map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} — {c.name}
-                </option>
+                <option key={c.id} value={c.id}>{c.code}: {c.name}</option>
               ))}
             </Select>
-          </div>
-
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted">
-                {t("tax.amount")} ($)
-              </label>
+            <Field label={t("tax.amountCurrency", { currency: CURRENCY })}>
               <Input
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 min="0.01"
                 value={deductionAmount}
                 onChange={(e) => setDeductionAmount(e.target.value)}
-                placeholder="250.00"
                 required
               />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted">
-                {t("tax.gstClaimed")} ($)
-              </label>
+            </Field>
+            <Field label={t("tax.gstClaimed")} hint={t("tax.gstAutoHint")}>
               <Input
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 min="0"
                 value={deductionGst}
                 onChange={(e) => setDeductionGst(e.target.value)}
-                placeholder="Auto (1/11th)"
               />
-            </div>
+            </Field>
           </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("tax.notes")}
-            </label>
-            <Input
-              value={deductionNotes}
-              onChange={(e) => setDeductionNotes(e.target.value)}
-              placeholder={t("tax.notesPlaceholder")}
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">
-              {t("tax.receiptUrl")}
-            </label>
-            <Input
-              value={deductionReceipt}
-              onChange={(e) => setDeductionReceipt(e.target.value)}
-              placeholder={t("tax.receiptUrlPlaceholder")}
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setDeductionModalOpen(false)}
-            >
-              {t("common.cancel")}
-            </Button>
+          <Field label={t("tax.notes")}>
+            <Input value={deductionNotes} onChange={(e) => setDeductionNotes(e.target.value)} placeholder={t("tax.notesPlaceholder")} />
+          </Field>
+          <Field label={t("tax.receiptUrl")} hint={t("common.optional")}>
+            <Input value={deductionReceipt} onChange={(e) => setDeductionReceipt(e.target.value)} placeholder={t("tax.receiptUrlPlaceholder")} dir="ltr" />
+          </Field>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={() => setDeductionModalOpen(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={addDeductionMutation.isPending}>
               {addDeductionMutation.isPending ? t("common.loading") : t("tax.claimDeduction")}
             </Button>

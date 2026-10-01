@@ -68,6 +68,38 @@ We have provided automated scripts that handle everything: checking prerequisite
 
 ---
 
+## 🎭 Demo vs 🔐 Production
+
+`setup.*` above is for local development. For running the app, there are two fully separate Docker stacks.
+Each has its own compose project, Postgres database, Redis, volumes and env file, so demo data can never
+reach the live database.
+
+| | Demo | Production |
+|---|---|---|
+| Start (Windows) | `.\start-demo.ps1` | `.\start-prod.ps1` |
+| Start (macOS/Linux) | `./start-demo.sh` (`make demo`) | `./start-prod.sh` (`make prod`) |
+| Stop | `-Down` / `--down` | `-Down` / `--down` |
+| Compose file | `docker-compose.demo.yml` (project `financebuddy-demo`) | `docker-compose.prod.yml` (project `financebuddy-prod`) |
+| Env file | `.env.demo` (copied from `.env.demo.example`) | `.env.production` (created from `.env.production.example`) |
+| Database | `financebuddy_demo`, volume `pgdata_demo`, host port 5433 | own volume `pgdata_prod`, **not** published on the host |
+| Redis | own container, host port 6380 | own container, password-protected, **not** published |
+| Seed data | Demo user + sample finances | Reference data only (categories, FX rates, knowledge corpus) |
+| Login page | Shows the demo credentials | No demo hint; the first sign-up is the first real account |
+| Secrets | Fixed, demo-only values | Generated on first run (`SECRET_KEY`, `DATA_ENCRYPTION_KEY`, DB and Redis passwords) |
+
+**Demo:** run the script, open `http://localhost:5173`, and sign in with the demo credentials.
+`-Reset` / `--reset` wipes only the demo database.
+
+**Production:**
+1. Run `start-prod` once. It creates `.env.production` with generated secrets and stops.
+   **Back this file up.** Losing `DATA_ENCRYPTION_KEY` makes encrypted user data unrecoverable.
+2. Edit `.env.production`: set `PUBLIC_API_URL` and `CORS_ORIGINS` to your real HTTPS domains, and add LLM and bank-provider keys.
+3. Run `start-prod` again. It refuses to start while any `CHANGE_ME` placeholder or demo/dev value remains.
+   The API also refuses to boot with `APP_ENV=production` and development secrets.
+4. Put a TLS-terminating reverse proxy (nginx, Caddy or a cloud load balancer) in front of the API and web ports.
+
+---
+
 ## 🛠️ Manual Development Setup
 
 If you prefer to run things manually, follow our detailed guides in the [Contributing Guidelines](CONTRIBUTING.md).

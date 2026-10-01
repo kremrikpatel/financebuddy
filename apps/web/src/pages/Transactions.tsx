@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { FileUp, ScanLine, Scissors } from "lucide-react";
+import { FileUp, ScanLine, Scissors, Search, ArrowLeftRight } from "lucide-react";
 import { http } from "@/lib/api";
-import { Badge, Button, Card, Input, Modal, Select, Spinner } from "@/components/ui";
-import { fmtMoney } from "@/lib/utils";
-import { cn } from "@/lib/utils";
+import {
+  Badge, Button, Card, Input, Modal, Select, PageHeader, Table, Skeleton, EmptyState, ErrorState, Notice, Field,
+} from "@/components/ui";
+import { fmtMoney, cn } from "@/lib/utils";
+import { useCoachContext } from "@/lib/coachTabs";
 
 interface Txn {
   id: string; account_id: string; date: string; amount_minor: number; currency: string;
@@ -40,7 +42,6 @@ export default function TransactionsPage() {
   const cats = useQuery({ queryKey: ["cats"], queryFn: () => http.get("/categories").then((r) => r.data as Cat[]) });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => http.get("/accounts").then((r) => r.data) });
 
-  const catById = useMemo(() => new Map<string, Cat>((cats.data ?? []).map((c) => [c.id, c])), [cats.data]);
   const acctById = useMemo(() => new Map<string, Acct>(((accounts.data ?? []) as Acct[]).map((a) => [a.id, a])), [accounts.data]);
 
   const confirmCat = useMutation({
@@ -54,83 +55,142 @@ export default function TransactionsPage() {
     onSuccess: () => void qc.invalidateQueries(),
   });
 
+  const list = txns.data ?? [];
+  const categorySelect = (x: Txn, width: string) => (
+    <Select
+      className={cn("h-9 min-h-9 py-0 text-sm", width)}
+      aria-label={t("txns.categoryFor", { merchant: x.merchant_raw })}
+      value={x.category_id ?? ""}
+      onChange={(e) => e.target.value && confirmCat.mutate({ id: x.id, categoryId: e.target.value })}
+    >
+      <option value="">{t("txns.uncategorized")}</option>
+      {(cats.data ?? [])
+        .filter((c) => c.kind !== "income")
+        .map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+    </Select>
+  );
+  const catById = useMemo(() => new Map((cats.data ?? []).map((c) => [c.id, c.name])), [cats.data]);
+
+  useCoachContext({
+    filters: {
+      search: search || null,
+      category: categoryFilter ? catById.get(categoryFilter) ?? null : null,
+      needs_review_only: reviewOnly,
+    },
+    shown: list.length,
+    needs_review: list.filter((x) => x.needs_review).length,
+    transactions: list.slice(0, 15).map((x) => ({
+      date: x.date,
+      merchant: x.merchant_raw.slice(0, 40),
+      amount: x.amount_minor / 100,
+      currency: x.currency,
+      category: x.category_id ? catById.get(x.category_id) ?? null : null,
+    })),
+  });
+
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">{t("txns.title")}</h1>
-        <div className="flex gap-2">
-          <ImportButton account={(accounts.data ?? [])[0]?.id} />
-          <ReceiptButton />
+    <div className="space-y-6">
+      <PageHeader
+        title={t("txns.title")}
+        actions={
+          <>
+            <ImportButton account={(accounts.data ?? [])[0]?.id} />
+            <ReceiptButton />
+          </>
+        }
+      />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:max-w-xs">
+          <Search size={16} className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden />
+          <Input
+            type="search"
+            className="ps-9"
+            placeholder={t("txns.search")}
+            aria-label={t("txns.search")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
+        <Select
+          className="w-auto min-w-40"
+          aria-label={t("txns.category")}
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+        >
+          <option value="">{t("txns.allCategories")}</option>
+          {(cats.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+        <label className="flex min-h-10 cursor-pointer items-center gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={reviewOnly}
+            onChange={(e) => setReviewOnly(e.target.checked)}
+            className="size-4 accent-brand"
+          />
+          {t("txns.needsReview")}
+        </label>
       </div>
 
-      <Card className="p-4">
-        <div className="flex flex-wrap gap-3">
-          <Input className="max-w-xs" placeholder={t("txns.search")} value={search} onChange={(e) => setSearch(e.target.value)} />
-          <Select className="max-w-44" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-            <option value="">All categories</option>
-            {(cats.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-          <label className="flex items-center gap-2 text-sm text-muted">
-            <input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} className="accent-indigo-500" />
-            {t("txns.needsReview")}
-          </label>
-        </div>
-      </Card>
-
-      {txns.isLoading ? (
-        <Spinner label={t("common.loading")} />
+      {txns.isError ? (
+        <ErrorState onRetry={() => void txns.refetch()} />
       ) : (
-        <Card className="overflow-hidden p-0">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-muted">
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Merchant</th>
-                <th className="px-4 py-3">Category</th>
-                <th className="hidden px-4 py-3 md:table-cell">Account</th>
-                <th className="px-4 py-3 text-right">Amount</th>
-                <th className="px-4 py-3" />
-              </tr>
-            </thead>
-            <tbody>
-              {(txns.data ?? []).map((x) => (
-                <tr key={x.id} className={cn("border-b border-line/60 transition hover:bg-surface", x.needs_review && "bg-amber-500/5")}>
-                  <td className="whitespace-nowrap px-4 py-2.5 text-muted tabular-nums">{x.date}</td>
-                  <td className="max-w-[220px] px-4 py-2.5">
-                    <p className="truncate font-medium">{x.merchant_raw}</p>
-                    {x.is_split_parent && <Badge tone="brand">split</Badge>}
-                    {(x.tags ?? []).includes("possible-split") && !x.is_split_parent && (
-                      <button onClick={() => suggestSplit.mutate(x.id)} title={t("txns.split")} className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand hover:bg-brand/20">
-                        <Scissors size={9} /> AI split
-                      </button>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <Select
-                      className="h-8 max-w-40 py-0 text-xs"
-                      value={x.category_id ?? ""}
-                      onChange={(e) => e.target.value && confirmCat.mutate({ id: x.id, categoryId: e.target.value })}
-                    >
-                      <option value="">{t("txns.uncategorized")}</option>
-                      {(cats.data ?? [])
-                        .filter((c) => c.kind !== "income")
-                        .map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </Select>
-                  </td>
-                  <td className="hidden px-4 py-2.5 text-muted md:table-cell">{acctById.get(x.account_id)?.name}</td>
-                  <td className={cn("px-4 py-2.5 text-right font-semibold tabular-nums", x.amount_minor > 0 ? "text-pos" : "")}>
-                    {fmtMoney(x.amount_minor, x.currency, i18n.language)}
-                  </td>
-                  <td className="px-4 py-2.5 text-right">
-                    {x.needs_review && <Badge tone="warn">review</Badge>}
-                    {x.categorization_method === "knn" && !x.needs_review && <Badge tone="brand">learned</Badge>}
-                  </td>
+        <Card className="overflow-hidden py-0">
+          {txns.isLoading ? (
+            <div className="space-y-3 py-5" role="status" aria-label={t("common.loading")}>
+              {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-10" />)}
+            </div>
+          ) : list.length === 0 ? (
+            <EmptyState icon={<ArrowLeftRight size={22} />} title={t("txns.emptyTitle")} body={t("txns.emptyBody")} />
+          ) : (
+            <Table label={t("txns.title")}>
+              <thead>
+                <tr>
+                  <th className="hidden sm:table-cell">{t("txns.date")}</th>
+                  <th>{t("txns.merchant")}</th>
+                  <th className="hidden sm:table-cell">{t("txns.category")}</th>
+                  <th className="hidden md:table-cell">{t("common.account")}</th>
+                  <th className="!text-end">{t("txns.amount")}</th>
+                  <th className="hidden sm:table-cell"><span className="sr-only">{t("common.status")}</span></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {(txns.data ?? []).length === 0 && <p className="py-10 text-center text-sm text-muted">No transactions yet — import a CSV or connect a bank.</p>}
+              </thead>
+              <tbody>
+                {list.map((x) => (
+                  <tr key={x.id} className={cn("transition-colors hover:bg-sunken/60", x.needs_review && "bg-warn/5")}>
+                    <td className="num hidden whitespace-nowrap text-muted sm:table-cell">{x.date}</td>
+                    <td className="max-w-[14rem]">
+                      <p className="truncate font-medium text-ink">{x.merchant_raw}</p>
+                      <p className="num text-xs text-muted sm:hidden">{x.date}</p>
+                      <div className="mt-1 flex flex-wrap gap-1 empty:hidden">
+                        {x.is_split_parent && <Badge tone="brand">{t("txns.splitBadge")}</Badge>}
+                        {(x.tags ?? []).includes("possible-split") && !x.is_split_parent && (
+                          <button
+                            type="button"
+                            onClick={() => suggestSplit.mutate(x.id)}
+                            className="chip bg-brand/10 text-brand hover:bg-brand/20"
+                          >
+                            <Scissors size={12} aria-hidden /> {t("txns.split")}
+                          </button>
+                        )}
+                        {x.needs_review && <span className="sm:hidden"><Badge tone="warn">{t("txns.review")}</Badge></span>}
+                      </div>
+                      {/* Below sm the category picker sits under the merchant so Amount stays visible. */}
+                      <div className="mt-2 sm:hidden">{categorySelect(x, "w-full")}</div>
+                    </td>
+                    <td className="hidden sm:table-cell">{categorySelect(x, "w-44")}</td>
+                    <td className="hidden text-muted md:table-cell">{acctById.get(x.account_id)?.name}</td>
+                    <td className={cn("num whitespace-nowrap text-end font-semibold", x.amount_minor > 0 ? "text-pos" : "text-ink")}>
+                      {fmtMoney(x.amount_minor, x.currency, i18n.language)}
+                    </td>
+                    <td className="hidden text-end sm:table-cell">
+                      {x.needs_review && <Badge tone="warn">{t("txns.review")}</Badge>}
+                      {x.categorization_method === "knn" && !x.needs_review && <Badge tone="brand">{t("txns.learned")}</Badge>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
         </Card>
       )}
     </div>
@@ -156,22 +216,26 @@ function ImportButton({ account }: { account?: string }) {
 
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
-        <FileUp size={15} /> {t("txns.importCsv")}
+      <Button variant="secondary" onClick={() => setOpen(true)}>
+        <FileUp size={16} aria-hidden /> {t("txns.importCsv")}
       </Button>
       <Modal open={open} onClose={() => setOpen(false)} title={t("txns.importCsv")}>
-        <div className="space-y-3">
-          {!account && <p className="text-sm text-neg">Create an account first.</p>}
-          <input type="file" accept=".csv,.ofx,.qfx" onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:text-brand" />
+        <div className="space-y-4">
+          {!account && <Notice tone="neg">{t("txns.createAccountFirst")}</Notice>}
+          <Field label={t("txns.chooseFile")} hint={t("txns.importHint")}>
+            <input
+              type="file"
+              accept=".csv,.ofx,.qfx"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-ink file:me-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:font-medium file:text-brand"
+            />
+          </Field>
           {result && (
-            <div className="rounded-xl bg-pos/10 p-3 text-sm text-pos">
-              Imported {result.created}, skipped {result.duplicates} duplicates.
-            </div>
+            <Notice tone="pos">{t("txns.importResult", { created: result.created, duplicates: result.duplicates })}</Notice>
           )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
-            <Button onClick={run} disabled={!file || !account}>Import</Button>
+            <Button onClick={run} disabled={!file || !account}>{t("txns.import")}</Button>
           </div>
         </div>
       </Modal>
@@ -180,6 +244,7 @@ function ImportButton({ account }: { account?: string }) {
 }
 
 function ReceiptButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [parsed, setParsed] = useState<any>(null);
@@ -194,26 +259,33 @@ function ReceiptButton() {
       const { data } = await http.post("/receipts/scan", form);
       setParsed(data);
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "OCR unavailable");
+      setError(e?.response?.data?.detail ?? t("txns.ocrUnavailable"));
     }
   }
 
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
-        <ScanLine size={15} /> Receipt
+      <Button variant="secondary" onClick={() => setOpen(true)}>
+        <ScanLine size={16} aria-hidden /> {t("txns.scanReceipt")}
       </Button>
-      <Modal open={open} onClose={() => { setOpen(false); setParsed(null); }} title="Scan receipt (OCR)">
-        <div className="space-y-3">
-          <input type="file" accept="image/*" capture="environment" onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:text-brand" />
-          {error && <p className="text-sm text-neg">{error}</p>}
+      <Modal open={open} onClose={() => { setOpen(false); setParsed(null); }} title={t("txns.scanReceipt")}>
+        <div className="space-y-4">
+          <Field label={t("txns.chooseFile")}>
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-ink file:me-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:font-medium file:text-brand"
+            />
+          </Field>
+          {error && <Notice tone="neg">{error}</Notice>}
           {parsed && (
-            <pre className="max-h-48 overflow-auto rounded-xl border border-line p-3 text-xs">{JSON.stringify(parsed, null, 2)}</pre>
+            <pre dir="ltr" className="max-h-48 overflow-auto rounded-lg bg-sunken p-3 text-xs text-ink">{JSON.stringify(parsed, null, 2)}</pre>
           )}
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
-            <Button onClick={scan} disabled={!file}>Scan</Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>{t("common.close")}</Button>
+            <Button onClick={scan} disabled={!file}>{t("txns.scan")}</Button>
           </div>
         </div>
       </Modal>

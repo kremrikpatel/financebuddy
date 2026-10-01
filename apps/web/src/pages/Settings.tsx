@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ShieldCheck, KeyRound, Fingerprint, Lock, Cpu, Sparkles } from "lucide-react";
+import { ShieldCheck, KeyRound, Fingerprint, Lock, Cpu } from "lucide-react";
 import { http } from "@/lib/api";
-import { Badge, Button, Card, Input, SectionTitle, Spinner } from "@/components/ui";
+import { Badge, Button, Card, Input, SectionTitle, Spinner, PageHeader, Field, Notice } from "@/components/ui";
 import { unlockVault, lockVault, isVaultUnlocked } from "@/lib/vault";
 import { LANGUAGES } from "@/i18n";
+import { cn } from "@/lib/utils";
+import { useCoachContext } from "@/lib/coachTabs";
 
 export default function SettingsPage() {
   const { t, i18n } = useTranslation();
@@ -15,53 +17,56 @@ export default function SettingsPage() {
     queryFn: () => http.get("/auth/vault").then((r) => r.data).catch(() => null),
   });
 
-  return (
-    <div className="space-y-5">
-      <h1 className="text-2xl font-bold">{t("settings.title")}</h1>
+  useCoachContext({
+    mfa_enabled: user.data?.mfa_enabled ?? null,
+    vault_configured: Boolean(vaultMeta.data?.kdf_salt_hex),
+    language: i18n.language.slice(0, 2),
+  });
 
-      <Card>
-        <SectionTitle>Profile</SectionTitle>
+  return (
+    <div className="max-w-3xl space-y-6">
+      <PageHeader title={t("settings.title")} />
+
+      <Card as="section">
+        <SectionTitle>{t("settings.profile")}</SectionTitle>
         {!user.data ? <Spinner /> : (
           <div className="space-y-3 text-sm">
-            <p><b>{user.data.email}</b> · {user.data.full_name}</p>
+            <p className="text-ink"><b className="font-semibold">{user.data.email}</b> · {user.data.full_name}</p>
             <div className="flex flex-wrap gap-2">
               <Badge tone={user.data.mfa_enabled ? "pos" : "warn"}>
-                2FA {user.data.mfa_enabled ? "enabled" : "disabled"}
+                {user.data.mfa_enabled ? t("settings.mfaOn") : t("settings.mfaOff")}
               </Badge>
-              <Badge tone="neutral">base currency {user.data.base_currency}</Badge>
+              <Badge>{t("settings.baseCurrency", { currency: user.data.base_currency })}</Badge>
             </div>
             <MfaControls enabled={user.data.mfa_enabled} />
           </div>
         )}
       </Card>
 
-      {/* AI Diagnostics & Observability Toggle Card */}
       <AiDiagnosticsToggleCard />
 
-      <Card>
-        <SectionTitle>Preferences</SectionTitle>
-        <div className="grid max-w-md gap-4 text-sm">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-muted">{t("common.language")}</span>
-            <select className="input" value={i18n.language.slice(0, 2)} onChange={(e) => i18n.changeLanguage(e.target.value)}>
-              {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-            </select>
-          </label>
-        </div>
+      <Card as="section">
+        <SectionTitle>{t("settings.preferences")}</SectionTitle>
+        <Field label={t("common.language")} className="max-w-sm">
+          <select className="input cursor-pointer pe-8" value={i18n.language.slice(0, 2)} onChange={(e) => i18n.changeLanguage(e.target.value)}>
+            {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+          </select>
+        </Field>
       </Card>
 
-      <Card>
-        <SectionTitle right={<Lock size={14} className="text-brand" />}>{t("settings.vault")}</SectionTitle>
+      <Card as="section">
+        <SectionTitle right={<Lock size={16} className="text-muted" aria-hidden />}>{t("settings.vault")}</SectionTitle>
         <VaultSetup configured={Boolean(vaultMeta.data?.kdf_salt_hex)} />
       </Card>
 
-      <Card>
-        <SectionTitle right={<Fingerprint size={14} className="text-brand" />}>{t("settings.passkeys")}</SectionTitle>
+      <Card as="section">
+        <SectionTitle right={<Fingerprint size={16} className="text-muted" aria-hidden />}>{t("settings.passkeys")}</SectionTitle>
         <PasskeyManager />
       </Card>
 
-      <Card>
+      <Card as="section">
         <SectionTitle>{t("settings.sessions")}</SectionTitle>
+        <p className="mb-3 text-sm text-muted">{t("settings.revokeHelp")}</p>
         <Button
           variant="danger"
           size="sm"
@@ -93,86 +98,82 @@ function AiDiagnosticsToggleCard() {
   };
 
   return (
-    <Card className="border-brand/30 bg-surface">
-      <SectionTitle right={<Cpu size={16} className="text-brand" />}>
+    <Card as="section">
+      <SectionTitle right={<Cpu size={16} className="text-muted" aria-hidden />}>
         {t("settings.aiDiagnosticsTitle")}
       </SectionTitle>
-
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div className="space-y-1">
-          <p className="text-sm font-semibold text-ink">
-            {t("settings.aiDiagnosticsToggle")}
-          </p>
-          <p className="text-xs text-muted max-w-xl">
-            {t("settings.aiDiagnosticsDesc")}
-          </p>
+          <p id="ai-diag-label" className="text-sm font-medium text-ink">{t("settings.aiDiagnosticsToggle")}</p>
+          <p className="max-w-xl text-sm text-muted">{t("settings.aiDiagnosticsDesc")}</p>
         </div>
-
-        <div className="flex items-center gap-3">
-          <Badge tone={enabled ? "brand" : "neutral"}>
-            {enabled
-              ? t("settings.aiDiagnosticsEnabled")
-              : t("settings.aiDiagnosticsDisabled")}
-          </Badge>
-
-          <button
-            type="button"
-            onClick={toggle}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-              enabled ? "bg-brand" : "bg-raised border-line"
-            }`}
-            role="switch"
-            aria-checked={enabled}
-          >
-            <span
-              aria-hidden="true"
-              className={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                enabled ? "translate-x-5" : "translate-x-0"
-              }`}
-            />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={toggle}
+          role="switch"
+          aria-checked={enabled}
+          aria-labelledby="ai-diag-label"
+          className={cn(
+            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200",
+            enabled ? "border-brand bg-brand" : "border-field bg-sunken",
+          )}
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none inline-block size-5 rounded-full bg-raised shadow transition-transform duration-200",
+              enabled ? "translate-x-5 rtl:-translate-x-5" : "translate-x-0.5 rtl:-translate-x-0.5",
+            )}
+          />
+        </button>
       </div>
     </Card>
   );
 }
 
 function MfaControls({ enabled }: { enabled: boolean }) {
+  const { t } = useTranslation();
   const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
   const [code, setCode] = useState("");
   const [codes, setCodes] = useState<string[] | null>(null);
 
   if (enabled && !codes)
     return (
-      <div className="flex items-center gap-2 pt-2">
-        <Input className="max-w-40" placeholder="123456" value={code} onChange={(e) => setCode(e.target.value)} />
-        <Button size="sm" variant="outline" onClick={() => http.post("/auth/mfa/disable", { code }).then(() => location.reload())}>
-          Disable 2FA
+      <div className="flex flex-wrap items-end gap-2 pt-2">
+        <Field label={t("auth.mfaCode")} className="w-40">
+          <Input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
+        </Field>
+        <Button size="sm" variant="secondary" className="min-h-10" onClick={() => http.post("/auth/mfa/disable", { code }).then(() => location.reload())}>
+          {t("settings.disableMfa")}
         </Button>
       </div>
     );
   if (codes)
     return (
-      <div className="rounded-xl bg-pos/10 p-3">
-        <p className="mb-2 text-sm font-medium text-pos">Recovery codes (store safely):</p>
-        <div className="flex flex-wrap gap-1.5 font-mono text-xs">{codes.map((c) => <span key={c} className="rounded bg-raised px-2 py-1">{c}</span>)}</div>
-      </div>
+      <Notice tone="pos">
+        <p className="mb-2 font-medium">{t("settings.recoveryCodes")}</p>
+        <div className="flex flex-wrap gap-1.5 font-mono text-xs" dir="ltr">
+          {codes.map((c) => <span key={c} className="rounded bg-raised px-2 py-1">{c}</span>)}
+        </div>
+      </Notice>
     );
   return (
     <div className="pt-2">
       {!setup ? (
         <Button size="sm" onClick={() => http.post("/auth/mfa/setup").then((r) => setSetup(r.data))}>
-          <ShieldCheck size={14} /> Enable 2FA
+          <ShieldCheck size={14} aria-hidden /> {t("settings.enableMfa")}
         </Button>
       ) : (
-        <div className="space-y-3 rounded-xl border border-line p-3">
-          <p className="text-xs text-muted">Add this secret to your authenticator:</p>
-          <code className="block break-all rounded-lg bg-surface p-2 font-mono text-xs">{setup.secret}</code>
-          <code className="block break-all text-[10px] text-muted">{setup.otpauth_uri}</code>
-          <div className="flex gap-2">
-            <Input className="max-w-40" placeholder="Verify code" value={code} onChange={(e) => setCode(e.target.value)} />
-            <Button size="sm" onClick={() => http.post("/auth/mfa/confirm", { code }).then((r) => setCodes(r.data.recovery_codes))}>
-              Confirm
+        <div className="space-y-3 rounded-lg border border-line p-4">
+          <p className="text-sm text-muted">{t("settings.addSecret")}</p>
+          <code dir="ltr" className="block break-all rounded-md bg-sunken p-2 font-mono text-xs text-ink">{setup.secret}</code>
+          <code dir="ltr" className="block break-all text-xs text-muted">{setup.otpauth_uri}</code>
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label={t("settings.verifyCode")} className="w-40">
+              <Input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
+            </Field>
+            <Button size="sm" className="min-h-10" onClick={() => http.post("/auth/mfa/confirm", { code }).then((r) => setCodes(r.data.recovery_codes))}>
+              {t("common.confirm")}
             </Button>
           </div>
         </div>
@@ -184,41 +185,34 @@ function MfaControls({ enabled }: { enabled: boolean }) {
 function VaultSetup({ configured }: { configured: boolean }) {
   const { t } = useTranslation();
   const [pass, setPass] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [unlocked, setUnlocked] = useState(isVaultUnlocked());
 
   return (
     <div className="max-w-md space-y-3 text-sm">
-      <p className="text-muted">
-        {configured
-          ? "Your vault is registered on the server — sensitive user fields and notes are end-to-end encrypted."
-          : t("settings.vaultSetup")}
-      </p>
+      <p className="text-muted">{configured ? t("settings.vaultRegistered") : t("settings.vaultSetup")}</p>
 
       {configured ? (
         unlocked ? (
-          <div className="flex items-center gap-3">
-            <Badge tone="pos">✓ Vault unlocked for this session</Badge>
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge tone="pos">{t("settings.vaultUnlocked")}</Badge>
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               onClick={() => {
                 lockVault();
                 setUnlocked(false);
-                setStatus("Vault locked.");
+                setStatus({ ok: true, text: t("settings.vaultLockedMsg") });
               }}
             >
-              Lock vault
+              {t("settings.lockVault")}
             </Button>
           </div>
         ) : (
           <div className="space-y-3">
-            <Input
-              type="password"
-              value={pass}
-              onChange={(e) => setPass(e.target.value)}
-              placeholder="Enter passphrase to unlock"
-            />
+            <Field label={t("settings.vaultPassphrase")}>
+              <Input type="password" autoComplete="current-password" value={pass} onChange={(e) => setPass(e.target.value)} />
+            </Field>
             <Button
               size="sm"
               disabled={!pass}
@@ -226,25 +220,22 @@ function VaultSetup({ configured }: { configured: boolean }) {
                 try {
                   await unlockVault(pass);
                   setUnlocked(true);
-                  setStatus("✓ Vault unlocked successfully");
+                  setStatus({ ok: true, text: t("settings.vaultUnlockedMsg") });
                   setPass("");
                 } catch (e: any) {
-                  setStatus(`Failed to unlock: ${e.message}`);
+                  setStatus({ ok: false, text: t("settings.vaultUnlockFailed", { detail: e.message }) });
                 }
               }}
             >
-              Unlock vault
+              {t("settings.unlockVault")}
             </Button>
           </div>
         )
       ) : (
         <div className="space-y-3">
-          <Input
-            type="password"
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-            placeholder="Vault passphrase (min 8 chars)"
-          />
+          <Field label={t("settings.vaultPassphrase")} hint={t("settings.vaultMinLength")}>
+            <Input type="password" autoComplete="new-password" value={pass} onChange={(e) => setPass(e.target.value)} />
+          </Field>
           <Button
             size="sm"
             disabled={pass.length < 8}
@@ -252,18 +243,18 @@ function VaultSetup({ configured }: { configured: boolean }) {
               try {
                 await unlockVault(pass);
                 setUnlocked(true);
-                setStatus("✓ Vault created and initialized on this device");
+                setStatus({ ok: true, text: t("settings.vaultCreatedMsg") });
                 setPass("");
               } catch (e: any) {
-                setStatus(String(e.message));
+                setStatus({ ok: false, text: String(e.message) });
               }
             }}
           >
-            Create vault
+            {t("settings.createVault")}
           </Button>
         </div>
       )}
-      {status && <Badge tone={status.startsWith("✓") ? "pos" : "warn"}>{status}</Badge>}
+      {status && <Notice tone={status.ok ? "pos" : "warn"}>{status.text}</Notice>}
     </div>
   );
 }
@@ -290,18 +281,18 @@ function PasskeyManager() {
   return (
     <div className="space-y-3 text-sm">
       {(keys.data ?? []).length > 0 ? (
-        <ul className="space-y-2">
+        <ul className="divide-y divide-line rounded-lg border border-line">
           {(keys.data ?? []).map((k: any) => (
-            <li key={k.id} className="flex items-center justify-between rounded-xl border border-line px-3 py-2">
-              <span><KeyRound size={13} className="mr-1.5 inline text-brand" />{k.label}</span>
-              <span className="text-xs text-muted">{k.created_at?.slice(0, 10)}</span>
+            <li key={k.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              <span className="flex items-center gap-2 text-ink"><KeyRound size={14} className="text-muted" aria-hidden />{k.label}</span>
+              <span className="num text-muted">{k.created_at?.slice(0, 10)}</span>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="text-muted">No passkeys registered.</p>
+        <p className="text-muted">{t("settings.noPasskeys")}</p>
       )}
-      <Button size="sm" variant="outline" onClick={registerPasskey}>{t("settings.registerPasskey")}</Button>
+      <Button size="sm" variant="secondary" onClick={registerPasskey}>{t("settings.registerPasskey")}</Button>
     </div>
   );
 }

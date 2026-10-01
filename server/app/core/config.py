@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The well-known key shipped in .env.example; fine for dev/demo, never for production.
+DEV_DEK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Core
-    app_env: str = "development"
+    app_env: str = "development"  # development | demo | production
     app_name: str = "FinanceBuddy"
     secret_key: str = "dev-secret-key-change-me-must-be-32-bytes-minimum"
     database_url: str = "postgresql+asyncpg://financebuddy:financebuddy@localhost:5432/financebuddy"
@@ -68,6 +71,22 @@ class Settings(BaseSettings):
         if len(bytes.fromhex(v)) != 32:
             raise ValueError("DATA_ENCRYPTION_KEY must be 32 bytes hex")
         return v
+
+    @model_validator(mode="after")
+    def _refuse_dev_defaults_in_production(self) -> "Settings":
+        """A live deployment must never boot on the development/demo secrets or database."""
+        if not self.is_prod:
+            return self
+        weak = []
+        if len(self.secret_key) < 32 or "change-me" in self.secret_key:
+            weak.append("SECRET_KEY")
+        if self.data_encryption_key in (DEV_DEK, "00" * 32):
+            weak.append("DATA_ENCRYPTION_KEY")
+        if "financebuddy:financebuddy@" in self.database_url or "_demo" in self.database_url:
+            weak.append("DATABASE_URL")
+        if weak:
+            raise ValueError(f"APP_ENV=production refuses development values for: {', '.join(weak)}")
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

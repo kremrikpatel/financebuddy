@@ -91,3 +91,15 @@ async def test_seed_populates_rich_dataset(db_session: AsyncSession):
     await seed(db_session)
     acc_count_2 = await db_session.scalar(select(func.count(Account.id)).where(Account.user_id == demo.id))
     assert acc_count_2 == len(accounts)
+
+
+@pytest.mark.asyncio
+async def test_reference_only_seed_creates_no_demo_user(db_session: AsyncSession):
+    """Production seeding (`--reference-only`) loads shared data but never the demo account."""
+    # Seeding commits and the test DB is session-scoped, so compare counts rather than assume empty.
+    users_before = await db_session.scalar(select(func.count(User.id)))
+    await seed(db_session, demo=False)
+
+    assert await db_session.scalar(select(func.count(Category.id)).where(Category.user_id.is_(None))) >= 20
+    assert await db_session.scalar(select(func.count(FxRate.base))) >= 10
+    assert await db_session.scalar(select(func.count(User.id))) == users_before

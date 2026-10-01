@@ -18,6 +18,8 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.demo.example
+!.env.production.example
 
 # DB / storage
 *.db
@@ -34,6 +36,3 @@ Thumbs.db
 # Tauri
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
-
-.remember
-.agents
