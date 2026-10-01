@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app import jev
 from app.ai.graph import route_of
 from app.ai.guardrails import chat_rate_limiter, check_guardrails
 from app.ai.pii import mask_pii
@@ -191,14 +192,19 @@ async def complete_turn(db: AsyncSession, user: User, body: SendIn, turn: Turn, 
     db.add(assistant_msg)
     await db.flush()
 
+    is_jev = provider in jev.HANDLERS
+    # LLM token counts remain the existing word-count estimate; JEV turns use no LLM at all.
+    tokens_in = 0 if is_jev else max(1, len(turn.masked_message.split()) * 2)
+    tokens_out = 0 if is_jev else max(1, len(content.split()) * 2)
     db.add(AiEvalLog(
         user_id=user.id, thread_id=turn.thread.id, message_id=assistant_msg.id,
-        provider_used=provider, model_name=settings.llm_primary_model,
-        tokens_in=max(1, len(turn.masked_message.split()) * 2),
-        tokens_out=max(1, len(content.split()) * 2),
-        latency_ms=latency_ms, route_chosen=route_chosen, confidence_score=0.95,
+        provider_used=provider, model_name="jev" if is_jev else settings.llm_primary_model,
+        tokens_in=tokens_in, tokens_out=tokens_out,
+        latency_ms=latency_ms, route_chosen=route_chosen,
+        confidence_score=(reply.response_metadata or {}).get("jev_confidence", 0.95),
         pii_fields_masked=turn.pii_count, query_summary=turn.masked_message[:120],
     ))
+    jev.record_request(provider, latency_ms, tokens_in + tokens_out)
     turn.thread.updated_at = utcnow()
     await db.flush()
     return {

@@ -43,6 +43,30 @@ class AiEvalHistoryResponse(BaseModel):
     limit: int
 
 
+@router.get("/jev/stats")
+async def get_jev_stats(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Chat turns by handler for the current user: how many LLM calls JEV avoided."""
+    from app.jev import HANDLERS
+
+    rows = (await db.execute(
+        select(AiEvalLog.provider_used, func.count(AiEvalLog.id),
+               func.coalesce(func.sum(AiEvalLog.tokens_in + AiEvalLog.tokens_out), 0))
+        .where(AiEvalLog.user_id == user.id, AiEvalLog.provider_used != "guardrails")
+        .group_by(AiEvalLog.provider_used))).all()
+    by_handler = {h: 0 for h in (*HANDLERS, "llm")}
+    llm_tokens = 0
+    for provider, n, tokens in rows:
+        by_handler[provider if provider in HANDLERS else "llm"] += n
+        llm_tokens += int(tokens or 0)
+    total = sum(by_handler.values())
+    jev_total = total - by_handler["llm"]
+    return {"total": total, "by_handler": by_handler, "llm_tokens_estimated": llm_tokens,
+            "llm_calls_avoided_pct": round(jev_total / total * 100, 1) if total else 0.0}
+
+
 @router.get("/eval/history", response_model=AiEvalHistoryResponse)
 async def get_eval_history(
     page: int = Query(1, ge=1),

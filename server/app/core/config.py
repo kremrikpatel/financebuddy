@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     tesseract_cmd: str | None = None
 
+    # JEV: deterministic pre-LLM layer (rules / direct service routing / cache)
+    jev_enabled: bool = True
+    jev_min_confidence: float = 0.8
+    jev_cache_ttl_seconds: int = 300
+
     @field_validator("data_encryption_key")
     @classmethod
     def _check_dek(cls, v: str) -> str:

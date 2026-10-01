@@ -63,6 +63,9 @@ class EventBus:
             await self._redis.aclose()
 
     async def publish(self, event: dict) -> None:
+        from app.jev import cache as jev_cache  # lazy: avoid import cycle via app.ai.tools
+
+        jev_cache.invalidate(event.get("user_id"))  # imports/syncs change answers JEV may have cached
         if self._redis:
             try:
                 await self._redis.xadd(STREAM, event)

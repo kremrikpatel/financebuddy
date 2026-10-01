@@ -23,6 +23,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import create_react_agent
 
+from app import jev
 from app.ai import rag
 from app.ai.llm_router import complete_json, get_chat_model
 from app.ai.pii import mask_pii
@@ -286,6 +287,8 @@ async def run_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
                    agent_mode: str = "auto", page_context: str | None = None,
                    db_session=None, page_summary: dict | None = None,
                    collector: dict | None = None) -> AIMessage:
+    if (handled := await jev.try_handle(messages, user_id, db_session, collector)) is not None:
+        return handled
     graph = build_graph()
     state = _initial_state(messages, user_id, thread_id, agent_mode, page_context, page_summary,
                            db_session, collector)
@@ -302,6 +305,10 @@ async def stream_chat(messages: list[BaseMessage], user_id: str, thread_id: str,
     Only tokens produced inside a specialist node are forwarded (the router's JSON and RAG are not).
     The final event carries the authoritative message; clients replace their streamed buffer with it.
     """
+    if (handled := await jev.try_handle(messages, user_id, db_session, collector)) is not None:
+        yield {"type": "delta", "text": handled.content}
+        yield {"type": "final", "message": handled}
+        return
     graph = build_graph()
     state = _initial_state(messages, user_id, thread_id, agent_mode, page_context, page_summary,
                            db_session, collector)
